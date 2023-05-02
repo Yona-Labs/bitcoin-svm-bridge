@@ -8,7 +8,7 @@ pub fn now_ts() -> Result<u32> {
     Ok(clock::Clock::get()?.unix_timestamp.try_into().unwrap())
 }
 
-declare_id!("8DMFpUfCk8KPkNLtE25XHuCSsT1GqYxuLdGzu59QK3Rt");
+declare_id!("E4DkgFmsZ3pKoyg55s4wPwDZaWdt1DGohEJMsezFq4tT");
 
 static MAX_DIFFICULTY: [u8; 32] = [
     0x00 as u8,
@@ -307,10 +307,10 @@ pub mod utils {
         // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
         // !!!!!!!!!!!!!!  DISABLE FOR TESTNET  !!!!!!!!!!!
         // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-        require!(
-            utils::has_correct_difficulty_target(*last_commited_header, header.nbits),
-            RelayErrorCode::ErrDiffTarget
-        );
+        // require!(
+        //     utils::has_correct_difficulty_target(*last_commited_header, header.nbits),
+        //     RelayErrorCode::ErrDiffTarget
+        // );
         
         //Set last_diff_adjustment if should be adjusted
         let timestamp = header.timestamp;
@@ -456,8 +456,10 @@ pub mod btc_relay {
 
         let main_state = &mut ctx.accounts.main_state.load_mut()?;
 
+        let main_state_tip = main_state.get_commitment(main_state.block_height);
+
         require!(
-            commit_hash == main_state.get_commitment(main_state.block_height),
+            commit_hash == main_state_tip,
             RelayErrorCode::PrevBlockCommitment
         );
 

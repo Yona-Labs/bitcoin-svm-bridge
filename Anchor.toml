@@ -1,14 +1,14 @@
 [features]
 seeds = false
 skip-lint = false
-[programs.devnet]
-btc_relay = "8DMFpUfCk8KPkNLtE25XHuCSsT1GqYxuLdGzu59QK3Rt"
+[programs.localnet]
+btc_relay = "E4DkgFmsZ3pKoyg55s4wPwDZaWdt1DGohEJMsezFq4tT"
 
 [registry]
 url = "https://api.apr.dev"
 
 [provider]
-cluster = "devnet"
+cluster = "localnet"
 wallet = "/root/.config/solana/id.json"
 
 [scripts]

@@ -251,9 +251,9 @@ describe("btc-relay", () => {
   });
 
   it("Verify tx!", async () => {
-
+    
     await new Promise(resolve => setTimeout(resolve, 2000));
-
+    
     const coder = new anchor.BorshCoder(program.idl);
     const eventParser = new anchor.EventParser(program.programId, coder);
 
