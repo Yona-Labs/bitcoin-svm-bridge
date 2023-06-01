@@ -945,7 +945,7 @@ impl MainState {
             if pos>=PRUNING_FACTOR_U32 {
                 return PRUNING_FACTOR;
             }
-            return pos as usize;
+            return (PRUNING_FACTOR_U32-pos) as usize;
         }
     }
 
