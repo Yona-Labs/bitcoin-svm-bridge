@@ -8,7 +8,7 @@ pub fn now_ts() -> Result<u32> {
     Ok(clock::Clock::get()?.unix_timestamp.try_into().unwrap())
 }
 
-declare_id!("E4DkgFmsZ3pKoyg55s4wPwDZaWdt1DGohEJMsezFq4tT");
+declare_id!("De2dsY5K3DXBDNzKUjE6KguVP5JUhveKNpMVRmRkazff");
 
 static MAX_DIFFICULTY: [u8; 32] = [
     0x00 as u8,
@@ -307,10 +307,10 @@ pub mod utils {
         // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
         // !!!!!!!!!!!!!!  DISABLE FOR TESTNET  !!!!!!!!!!!
         // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-        // require!(
-        //     utils::has_correct_difficulty_target(*last_commited_header, header.nbits),
-        //     RelayErrorCode::ErrDiffTarget
-        // );
+        require!(
+            utils::has_correct_difficulty_target(*last_commited_header, header.nbits),
+            RelayErrorCode::ErrDiffTarget
+        );
         
         //Set last_diff_adjustment if should be adjusted
         let timestamp = header.timestamp;

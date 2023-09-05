@@ -1,15 +1,15 @@
 [features]
 seeds = false
 skip-lint = false
-[programs.localnet]
-btc_relay = "E4DkgFmsZ3pKoyg55s4wPwDZaWdt1DGohEJMsezFq4tT"
+[programs.mainnet]
+btc_relay = "De2dsY5K3DXBDNzKUjE6KguVP5JUhveKNpMVRmRkazff"
 
 [registry]
 url = "https://api.apr.dev"
 
 [provider]
-cluster = "localnet"
-wallet = "/root/.config/solana/id.json"
+cluster = "mainnet"
+wallet = "/home/adam/mainnet.key"
 
 [scripts]
 test = "yarn run ts-mocha -p ./tsconfig.json -t 1000000 tests/**/*.ts"
