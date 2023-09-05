@@ -1,21 +1,12 @@
+/*
+* Utility for parsing bitcoin transactions  
+*/
+
 use anchor_lang::{
     prelude::*,
-    solana_program::instruction::Instruction,
     solana_program::hash
 };
-use std::str::FromStr;
 
-static BTC_RELAY_ID_BASE58: &str = "8DMFpUfCk8KPkNLtE25XHuCSsT1GqYxuLdGzu59QK3Rt";
-static IX_PREFIX: [u8; 8] = [
-    0x9d,
-    0x7e,
-    0xc1,
-    0x86,
-    0x31,
-    0x33,
-    0x07,
-    0x58
-];
 
 pub mod txutils {
     use super::*;
@@ -45,6 +36,8 @@ pub mod txutils {
         pub witness: bool
     }
 
+    //Reads a varint from the data at a start index
+    //varint description: https://en.bitcoin.it/wiki/Protocol_documentation#Variable_length_integer
     pub fn read_var_int(data: &[u8], start: usize) -> (u64, usize) {
         if data[start] <= 0xFC {
             return (data[start] as u64, 1);
@@ -60,6 +53,8 @@ pub mod txutils {
         }
     }
 
+    //Parses a bitcoin transaction from raw data, supports both, witness transactions and non-witness transactions
+    //Format description: https://en.bitcoin.it/wiki/Transaction
     pub fn parse_transaction(data: &[u8]) -> BitcoinTransaction {
         
         let version = u32::from_le_bytes(data[0..4].try_into().unwrap());
@@ -158,37 +153,5 @@ pub mod txutils {
             witness: flag==0
         }
 
-    }
-
-    pub fn verify_tx_ix(ix: &Instruction, reversed_tx_id: &[u8; 32], confirmations: u32) -> Result<u8> {
-        let btc_relay_id: Pubkey = Pubkey::from_str(BTC_RELAY_ID_BASE58).unwrap();
-
-        if  ix.program_id       != btc_relay_id
-        {
-            return Ok(10);
-        }
-
-        return Ok(check_tx_data(&ix.data, reversed_tx_id, confirmations)); // If that's not the case, check data
-    }
-
-    /// Verify serialized BtcRelay instruction data
-    pub fn check_tx_data(data: &[u8], reversed_tx_id: &[u8; 32], confirmations: u32) -> u8 {
-        for i in 0..8 {
-            if data[i] != IX_PREFIX[i] {
-                return 1;
-            }
-        }
-        for i in 8..40 {
-            if data[i] != reversed_tx_id[i-8] {
-                return 2;
-            }
-        }
-
-        let _confirmations = u32::from_le_bytes(data[40..44].try_into().unwrap());
-        if confirmations != _confirmations {
-            return 3;
-        }
-
-        return 0;
     }
 }
