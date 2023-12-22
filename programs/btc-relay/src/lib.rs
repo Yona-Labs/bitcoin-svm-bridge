@@ -357,7 +357,7 @@ pub mod btc_relay {
     pub fn verify_transaction(ctx: Context<VerifyTransaction>, reversed_txid: [u8; 32], confirmations: u32, tx_index: u32, reversed_merkle_proof: Vec<[u8; 32]>, commited_header: CommittedBlockHeader) -> Result<()> {
         let block_height = commited_header.blockheight;
 
-        let main_state = &mut ctx.accounts.main_state.load_mut()?;
+        let main_state = ctx.accounts.main_state.load()?;
 
         require!(
             main_state.block_height - block_height + 1 >= confirmations,
@@ -390,7 +390,7 @@ pub mod btc_relay {
     //This can be called a standalone instruction, that gets executed
     // before the instructions that depend on bitcoin relay having a specific blockheight
     pub fn block_height(ctx: Context<BlockHeight>, value: u32, operation: u32) -> Result<()> {
-        let main_state = &mut ctx.accounts.main_state.load_mut()?;
+        let main_state = ctx.accounts.main_state.load()?;
         let block_height = main_state.block_height;
 
         let result = match operation {

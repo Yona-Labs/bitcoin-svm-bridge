@@ -124,7 +124,6 @@ pub struct VerifyTransaction<'info> {
     pub signer: Signer<'info>,
 
     #[account(
-        mut,
         seeds = [b"state".as_ref()],
         bump
     )]
@@ -138,7 +137,6 @@ pub struct BlockHeight<'info> {
     pub signer: Signer<'info>,
 
     #[account(
-        mut,
         seeds = [b"state".as_ref()],
         bump
     )]
