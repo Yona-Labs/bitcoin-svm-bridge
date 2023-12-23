@@ -5,11 +5,7 @@ use crate::state::*;
 
 #[derive(Accounts)]
 #[instruction(
-    data: BlockHeader,
-    block_height: u32,
-    chain_work: [u8; 32],
-    last_diff_adjustment: u32,
-    prev_block_timestamps: [u32; 10]
+    data: BlockHeader
 )]
 pub struct Initialize<'info> {
     /// CHECK: This is not dangerous because we don't read or write from this account
@@ -68,8 +64,7 @@ pub struct SubmitShortForkHeaders<'info> {
 #[instruction(
     headers: Vec<BlockHeader>,
     commited_header: CommittedBlockHeader,
-    fork_id: u64,
-    init: bool
+    fork_id: u64
 )]
 pub struct SubmitForkHeaders<'info> {
     /// CHECK: This is not dangerous because we don't read or write from this account
