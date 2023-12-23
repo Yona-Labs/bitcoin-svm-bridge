@@ -14,7 +14,7 @@ pub fn now_ts() -> Result<u32> {
 }
 
 //https://en.bitcoin.it/wiki/Difficulty#How_is_difficulty_calculated.3F_What_is_the_difference_between_bdiff_and_pdiff.3F
-static MAX_DIFFICULTY: [u8; 32] = [
+const MAX_DIFFICULTY: [u8; 32] = [
     0x00_u8,
     0x00_u8,
     0x00_u8,
@@ -50,7 +50,7 @@ static MAX_DIFFICULTY: [u8; 32] = [
 ];
 
 //https://en.bitcoin.it/wiki/Target#What_is_the_maximum_target.3F
-static UNROUNDED_MAX_TARGET: [u8; 32] = [
+const UNROUNDED_MAX_TARGET: [u8; 32] = [
     0x00_u8,
     0x00_u8,
     0x00_u8,
@@ -86,18 +86,18 @@ static UNROUNDED_MAX_TARGET: [u8; 32] = [
 ];
 
 //Bitcoin constants
-static DIFF_ADJUSTMENT_INTERVAL: u32 = 2016;
-static TARGET_TIMESPAN: u32 = 14 * 24 * 60 * 60; // 2 weeks
+const DIFF_ADJUSTMENT_INTERVAL: u32 = 2016;
+const TARGET_TIMESPAN: u32 = 14 * 24 * 60 * 60; // 2 weeks
 
 //Pre-calculated multiples for target timespan
-static TARGET_TIMESPAN_DIV_4: u32 = TARGET_TIMESPAN / 4;
-static TARGET_TIMESPAN_MUL_4: u32 = TARGET_TIMESPAN * 4;
+const TARGET_TIMESPAN_DIV_4: u32 = TARGET_TIMESPAN / 4;
+const TARGET_TIMESPAN_MUL_4: u32 = TARGET_TIMESPAN * 4;
 
 //Maximum positive difference between bitcoin block's timestamp and Solana's on-chain clock
 //Nodes in bitcoin network generally reject any block with timestamp more than 2 hours in the future
 //As we are dealing with another blockchain here,
 // with the possibility of the Solana's on-chain clock being skewed, we chose double the value - 4 hours
-static MAX_FUTURE_BLOCKTIME: u32 = 4 * 60 * 60;
+const MAX_FUTURE_BLOCKTIME: u32 = 4 * 60 * 60;
 
 //Compresses difficulty target to nBits
 //Description: https://btcinformation.org/en/developer-reference#target-nbits
