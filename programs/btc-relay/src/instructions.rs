@@ -8,7 +8,6 @@ use crate::state::*;
     data: BlockHeader
 )]
 pub struct Initialize<'info> {
-    /// CHECK: This is not dangerous because we don't read or write from this account
     #[account(mut)]
     pub signer: Signer<'info>,
 
@@ -21,20 +20,18 @@ pub struct Initialize<'info> {
     )]
     pub main_state: AccountLoader<'info, MainState>,
 
-    /// CHECK: This is not dangerous because we don't read or write from this account
+    /// CHECK: This is only used for indexing purposes
     #[account(
         seeds = [b"header".as_ref(), data.get_block_hash()?.as_ref()],
         bump
     )]
     pub header_topic: AccountInfo<'info>,
 
-    /// CHECK: This is not dangerous because we don't read or write from this account
     pub system_program: Program<'info, System>
 }
 
 #[derive(Accounts)]
 pub struct SubmitBlockHeaders<'info> {
-    /// CHECK: This is not dangerous because we don't read or write from this account
     #[account(mut)]
     pub signer: Signer<'info>,
 
@@ -48,7 +45,6 @@ pub struct SubmitBlockHeaders<'info> {
 
 #[derive(Accounts)]
 pub struct SubmitShortForkHeaders<'info> {
-    /// CHECK: This is not dangerous because we don't read or write from this account
     #[account(mut)]
     pub signer: Signer<'info>,
 
@@ -67,7 +63,6 @@ pub struct SubmitShortForkHeaders<'info> {
     fork_id: u64
 )]
 pub struct SubmitForkHeaders<'info> {
-    /// CHECK: This is not dangerous because we don't read or write from this account
     #[account(mut)]
     pub signer: Signer<'info>,
 
@@ -87,7 +82,6 @@ pub struct SubmitForkHeaders<'info> {
     )]
     pub fork_state: AccountLoader<'info, ForkState>,
 
-    /// CHECK: This is not dangerous because we don't read or write from this account
     pub system_program: Program<'info, System>
 }
 
@@ -96,7 +90,6 @@ pub struct SubmitForkHeaders<'info> {
     fork_id: u64
 )]
 pub struct CloseForkAccount<'info> {
-    /// CHECK: This is not dangerous because we don't read or write from this account
     #[account(mut)]
     pub signer: Signer<'info>,
 
@@ -108,13 +101,11 @@ pub struct CloseForkAccount<'info> {
     )]
     pub fork_state: AccountLoader<'info, ForkState>,
 
-    /// CHECK: This is not dangerous because we don't read or write from this account
     pub system_program: Program<'info, System>
 }
 
 #[derive(Accounts)]
 pub struct VerifyTransaction<'info> {
-    /// CHECK: This is not dangerous because we don't read or write from this account
     #[account(mut)]
     pub signer: Signer<'info>,
 
@@ -127,7 +118,6 @@ pub struct VerifyTransaction<'info> {
 
 #[derive(Accounts)]
 pub struct BlockHeight<'info> {
-    /// CHECK: This is not dangerous because we don't read or write from this account
     #[account(mut)]
     pub signer: Signer<'info>,
 
