@@ -73,6 +73,11 @@ pub mod btc_relay {
             !data.is_empty(),
             RelayErrorCode::NoHeaders
         );
+        
+        require!(
+            data.len() == ctx.remaining_accounts.len(),
+            RelayErrorCode::InvalidRemainingAccounts
+        );
 
         //Verify commited header was indeed committed
         let commit_hash = commited_header.get_commit_hash()?;
@@ -133,6 +138,11 @@ pub mod btc_relay {
         require!(
             !data.is_empty(),
             RelayErrorCode::NoHeaders
+        );
+        
+        require!(
+            data.len() == ctx.remaining_accounts.len(),
+            RelayErrorCode::InvalidRemainingAccounts
         );
 
         //Verify commited header was indeed committed
@@ -204,14 +214,19 @@ pub mod btc_relay {
     // allowing forks of >7 blocks, as soon as the fork chain's work exceeds
     // the main chain's work, the main chain is overwritten and fork PDA closed
     pub fn submit_fork_headers(ctx: Context<SubmitForkHeaders>, data: Vec<BlockHeader>, commited_header: CommittedBlockHeader, fork_id: u64, init: bool) -> Result<()> {
+        require!(
+            !data.is_empty(),
+            RelayErrorCode::NoHeaders
+        );
+        
+        require!(
+            data.len() == ctx.remaining_accounts.len(),
+            RelayErrorCode::InvalidRemainingAccounts
+        );
 
         let mut close = false;
 
         {
-            require!(
-                !data.is_empty(),
-                RelayErrorCode::NoHeaders
-            );
 
             let load_res = if init {
                 ctx.accounts.fork_state.load_init()

@@ -29,5 +29,7 @@ pub enum RelayErrorCode {
     #[msg("Blockheight doesn't match")]
     InvalidBlockheight,
     #[msg("Fork has invalid ID")]
-    InvalidForkId
+    InvalidForkId,
+    #[msg("Didn't pass enough remaining accounts!")]
+    InvalidRemainingAccounts
 }
