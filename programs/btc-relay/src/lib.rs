@@ -237,7 +237,7 @@ pub mod btc_relay {
                 //Has to use new fork_id from the fork_counter
                 require!(
                     main_state.fork_counter == fork_id,
-                    RelayErrorCode::NoHeaders
+                    RelayErrorCode::InvalidForkId
                 );
 
                 main_state.fork_counter = fork_id+1;

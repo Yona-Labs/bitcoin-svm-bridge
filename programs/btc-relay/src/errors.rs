@@ -27,5 +27,7 @@ pub enum RelayErrorCode {
     #[msg("Invalid merkle root")]
     MerkleRoot,
     #[msg("Blockheight doesn't match")]
-    InvalidBlockheight
+    InvalidBlockheight,
+    #[msg("Fork has invalid ID")]
+    InvalidForkId
 }
