@@ -18,7 +18,7 @@ pub struct MainState {
     pub tip_block_hash: [u8; 32], //Blockhash of the latest block - blockchain tip
 
     pub chain_work: [u8; 32], //Accumulated work of the chain
-    pub block_commitments: [[u8; 32]; 250] //Ring buffer storing block data commitments (sha256 hashes of CommittedBlockHeader data)
+    pub block_commitments: [[u8; 32]; 250], //Ring buffer storing block data commitments (sha256 hashes of CommittedBlockHeader data)
 }
 
 impl MainState {
@@ -84,14 +84,14 @@ impl MainState {
 #[account(zero_copy)]
 #[repr(C)]
 pub struct ForkState {
-    pub initialized: u32, //1 - initialized, 0 - not yet initialized (boolean messes up the padding for zero_copy, so u32 is used instead) 
+    pub initialized: u32, //1 - initialized, 0 - not yet initialized (boolean messes up the padding for zero_copy, so u32 is used instead)
     pub start_height: u32, //Blockheight of last block that is also in main chain
     pub length: u32, //Current length of the fork
 
     pub tip_commit_hash: [u8; 32], //Blockheader data commitment hash for the latest block - fork tip
     pub tip_block_hash: [u8; 32], //Blockhash of the latest block - fork tip
 
-    pub block_commitments: [[u8; 32]; 250] //Buffer storing block data commitments (sha256 hashes of CommittedBlockHeader data)
+    pub block_commitments: [[u8; 32]; 250], //Buffer storing block data commitments (sha256 hashes of CommittedBlockHeader data)
 }
 
 impl ForkState {

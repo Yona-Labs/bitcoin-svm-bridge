@@ -396,17 +396,15 @@ pub mod btc_relay {
         let main_state = ctx.accounts.main_state.load()?;
         let block_height = main_state.block_height;
 
-        let result = match operation {
-            0 => block_height < value,
-            1 => block_height <= value,
-            2 => block_height > value,
-            3 => block_height >= value,
-            4 => block_height == value,
-            _ => false
-        };
-
         require!(
-            result,
+            match operation {
+                0 => block_height < value,
+                1 => block_height <= value,
+                2 => block_height > value,
+                3 => block_height >= value,
+                4 => block_height == value,
+                _ => false
+            },
             RelayErrorCode::InvalidBlockheight
         );
 
