@@ -34,6 +34,7 @@ pub fn div_in_place(arr: &mut [u8; 32], divisor: u32) {
     let casted_div: u64 = divisor as u64;
     let mut remainder: u64 = 0;
 
+    #[allow(clippy::needless_range_loop)]
     for i in 0..32 {
         let val: u64 = (arr[i] as u64) + remainder;
         let result = val / casted_div;
@@ -49,11 +50,11 @@ pub fn gte_arr(arr1: [u8; 32], arr2: [u8; 32]) -> bool {
         if arr1[i]>arr2[i] {return true};
         if arr1[i]<arr2[i] {return false};
     }
-    return true;
+    true
 }
 
 pub fn lte_arr(arr1: [u8; 32], arr2: [u8; 32]) -> bool {
-    return gte_arr(arr2, arr1);
+    gte_arr(arr2, arr1)
 }
 
 pub fn gt_arr(arr1: [u8; 32], arr2: [u8; 32]) -> bool {
@@ -61,9 +62,9 @@ pub fn gt_arr(arr1: [u8; 32], arr2: [u8; 32]) -> bool {
         if arr1[i]>arr2[i] {return true};
         if arr1[i]<arr2[i] {return false};
     }
-    return false;
+    false
 }
 
 pub fn lt_arr(arr1: [u8; 32], arr2: [u8; 32]) -> bool {
-    return gt_arr(arr2, arr1);
+    gt_arr(arr2, arr1)
 }

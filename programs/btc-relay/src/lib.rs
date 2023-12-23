@@ -1,6 +1,4 @@
-use anchor_lang::{
-    prelude::*
-};
+use anchor_lang::prelude::*;
 use instructions::*;
 use events::*;
 use errors::*;
@@ -39,14 +37,14 @@ pub mod btc_relay {
         main_state.fork_counter = 0;
 
         let commited_header = CommittedBlockHeader {
-            chain_work: chain_work,
+            chain_work,
 
             header: data,
         
-            last_diff_adjustment: last_diff_adjustment,
+            last_diff_adjustment,
             blockheight: block_height,
         
-            prev_block_timestamps: prev_block_timestamps
+            prev_block_timestamps
         };
 
         let hash_result = commited_header.get_commit_hash()?;
@@ -61,7 +59,7 @@ pub mod btc_relay {
         main_state.tip_commit_hash = hash_result;
 
         emit!(StoreHeader {
-            block_hash: block_hash,
+            block_hash,
             commit_hash: hash_result,
             header: commited_header
         });
@@ -72,7 +70,7 @@ pub mod btc_relay {
     //Submit new main chain blockheaders
     pub fn submit_block_headers(ctx: Context<SubmitBlockHeaders>, data: Vec<BlockHeader>, commited_header: CommittedBlockHeader) -> Result<()> {
         require!(
-            data.len() > 0,
+            !data.is_empty(),
             RelayErrorCode::NoHeaders
         );
 
@@ -90,8 +88,7 @@ pub mod btc_relay {
         let mut block_height = main_state.block_height;
         let mut block_commit_hash: [u8; 32] = [0; 32];
 
-        let mut block_cnt = 0;
-        for header in data.iter() {
+        for (block_cnt, header) in data.iter().enumerate() {
             //Prev block hash matches
             require!(
                 last_block_hash == header.reversed_prev_blockhash,
@@ -118,8 +115,6 @@ pub mod btc_relay {
                 commit_hash: block_commit_hash,
                 header: last_commited_header
             });
-
-            block_cnt += 1;
         }
 
         //Update globals
@@ -136,7 +131,7 @@ pub mod btc_relay {
     // only allows submission of up to 7 blockheaders, due to Solana tx size limitation
     pub fn submit_short_fork_headers(ctx: Context<SubmitShortForkHeaders>, data: Vec<BlockHeader>, commited_header: CommittedBlockHeader) -> Result<()> {
         require!(
-            data.len() > 0,
+            !data.is_empty(),
             RelayErrorCode::NoHeaders
         );
 
@@ -157,8 +152,7 @@ pub mod btc_relay {
 
         let mut block_commit_hash: [u8; 32] = [0; 32];
 
-        let mut block_cnt = 0;
-        for header in data.iter() {
+        for (block_cnt, header) in data.iter().enumerate() {
             //Prev block hash matches
             require!(
                 last_block_hash == header.reversed_prev_blockhash,
@@ -181,13 +175,11 @@ pub mod btc_relay {
             //Store and emit
             main_state.store_block_commitment(block_height, block_commit_hash);
             emit!(StoreFork {
-                fork_id: fork_id,
+                fork_id,
                 block_hash: last_block_hash,
                 commit_hash: block_commit_hash,
                 header: last_commited_header
             });
-
-            block_cnt += 1;
         }
 
         //Verify if fork chain's work exceeded main chain's work
@@ -217,16 +209,15 @@ pub mod btc_relay {
 
         {
             require!(
-                data.len() > 0,
+                !data.is_empty(),
                 RelayErrorCode::NoHeaders
             );
 
-            let load_res;
-            if init {
-                load_res = ctx.accounts.fork_state.load_init();
+            let load_res = if init {
+                ctx.accounts.fork_state.load_init()
             } else {
-                load_res = ctx.accounts.fork_state.load_mut();
-            }
+                ctx.accounts.fork_state.load_mut()
+            };
 
             let fork_state = &mut load_res?;
 
@@ -273,8 +264,7 @@ pub mod btc_relay {
 
             let mut block_commit_hash: [u8; 32] = [0; 32];
 
-            let mut block_cnt = 0;
-            for header in data.iter() {
+            for (block_cnt, header) in data.iter().enumerate() {
                 //Prev block hash matches
                 require!(
                     last_block_hash == header.reversed_prev_blockhash,
@@ -291,13 +281,11 @@ pub mod btc_relay {
                 //Store and emit
                 fork_state.store_block_commitment(block_commit_hash);
                 emit!(StoreFork {
-                    fork_id: fork_id,
+                    fork_id,
                     block_hash: last_block_hash,
                     commit_hash: block_commit_hash,
                     header: last_commited_header
                 });
-
-                block_cnt += 1;
             }
 
             if arrayutils::gt_arr(last_commited_header.chain_work, main_state.chain_work) {
@@ -326,8 +314,8 @@ pub mod btc_relay {
                 close = true;
 
                 emit!(ChainReorg {
-                    fork_id: fork_id,
-                    start_height: start_height,
+                    fork_id,
+                    start_height,
                     tip_block_hash: last_block_hash,
                     tip_commit_hash: block_commit_hash
                 });

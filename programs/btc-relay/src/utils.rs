@@ -15,74 +15,74 @@ pub fn now_ts() -> Result<u32> {
 
 //https://en.bitcoin.it/wiki/Difficulty#How_is_difficulty_calculated.3F_What_is_the_difference_between_bdiff_and_pdiff.3F
 static MAX_DIFFICULTY: [u8; 32] = [
-    0x00 as u8,
-    0x00 as u8,
-    0x00 as u8,
-    0x00 as u8,
-    0xFF as u8,
-    0xFF as u8,
-    0x00 as u8,
-    0x00 as u8,
-    0x00 as u8,
-    0x00 as u8,
-    0x00 as u8,
-    0x00 as u8,
-    0x00 as u8,
-    0x00 as u8,
-    0x00 as u8,
-    0x00 as u8,
-    0x00 as u8,
-    0x00 as u8,
-    0x00 as u8,
-    0x00 as u8,
-    0x00 as u8,
-    0x00 as u8,
-    0x00 as u8,
-    0x00 as u8,
-    0x00 as u8,
-    0x00 as u8,
-    0x00 as u8,
-    0x00 as u8,
-    0x00 as u8,
-    0x00 as u8,
-    0x00 as u8,
-    0x00 as u8
+    0x00_u8,
+    0x00_u8,
+    0x00_u8,
+    0x00_u8,
+    0xFF_u8,
+    0xFF_u8,
+    0x00_u8,
+    0x00_u8,
+    0x00_u8,
+    0x00_u8,
+    0x00_u8,
+    0x00_u8,
+    0x00_u8,
+    0x00_u8,
+    0x00_u8,
+    0x00_u8,
+    0x00_u8,
+    0x00_u8,
+    0x00_u8,
+    0x00_u8,
+    0x00_u8,
+    0x00_u8,
+    0x00_u8,
+    0x00_u8,
+    0x00_u8,
+    0x00_u8,
+    0x00_u8,
+    0x00_u8,
+    0x00_u8,
+    0x00_u8,
+    0x00_u8,
+    0x00_u8
 ];
 
 //https://en.bitcoin.it/wiki/Target#What_is_the_maximum_target.3F
 static UNROUNDED_MAX_TARGET: [u8; 32] = [
-    0x00 as u8,
-    0x00 as u8,
-    0x00 as u8,
-    0x00 as u8,
-    0xFF as u8,
-    0xFF as u8,
-    0xFF as u8,
-    0xFF as u8,
-    0xFF as u8,
-    0xFF as u8,
-    0xFF as u8,
-    0xFF as u8,
-    0xFF as u8,
-    0xFF as u8,
-    0xFF as u8,
-    0xFF as u8,
-    0xFF as u8,
-    0xFF as u8,
-    0xFF as u8,
-    0xFF as u8,
-    0xFF as u8,
-    0xFF as u8,
-    0xFF as u8,
-    0xFF as u8,
-    0xFF as u8,
-    0xFF as u8,
-    0xFF as u8,
-    0xFF as u8,
-    0xFF as u8,
-    0xFF as u8,
-    0xFF as u8,
-    0xFF as u8
+    0x00_u8,
+    0x00_u8,
+    0x00_u8,
+    0x00_u8,
+    0xFF_u8,
+    0xFF_u8,
+    0xFF_u8,
+    0xFF_u8,
+    0xFF_u8,
+    0xFF_u8,
+    0xFF_u8,
+    0xFF_u8,
+    0xFF_u8,
+    0xFF_u8,
+    0xFF_u8,
+    0xFF_u8,
+    0xFF_u8,
+    0xFF_u8,
+    0xFF_u8,
+    0xFF_u8,
+    0xFF_u8,
+    0xFF_u8,
+    0xFF_u8,
+    0xFF_u8,
+    0xFF_u8,
+    0xFF_u8,
+    0xFF_u8,
+    0xFF_u8,
+    0xFF_u8,
+    0xFF_u8,
+    0xFF_u8,
+    0xFF_u8
 ];
 
 //Bitcoin constants
@@ -104,6 +104,7 @@ static MAX_FUTURE_BLOCKTIME: u32 = 4 * 60 * 60;
 pub fn target_to_nbits(target: [u8; 32]) -> u32 {
 
     let mut n_size: u32 = 0;
+    #[allow(clippy::needless_range_loop)]
     for i in 0..32 {
         if target[i]>0 {
             n_size = (32-i) as u32;
@@ -121,14 +122,14 @@ pub fn target_to_nbits(target: [u8; 32]) -> u32 {
     }
     
     if (n_compact & 0x00800000) > 0 {
-        n_compact = n_compact >> 8;
+        n_compact >>= 8;
         n_size += 1;
     }
 
     n_compact = n_compact & 0x00FFFFFF |
                 (n_size<<24) & 0xFF000000;
 
-    return n_compact;
+    n_compact
 
 }
 
@@ -152,7 +153,7 @@ pub fn nbits_to_target(nbits: u32) -> [u8; 32] {
         }
     }
 
-    return target;
+    target
 }
 
 //Calculates difficulty from difficulty target
@@ -162,6 +163,8 @@ pub fn get_difficulty(target: [u8; 32]) -> [u8; 32] {
 
     //Find leading byte (first non-zero byte)
     let mut start = 0;
+    
+    #[allow(clippy::needless_range_loop)]
     for i in 0..32 {
         if target[i]>0 {
             start = i;
@@ -190,6 +193,7 @@ pub fn get_difficulty(target: [u8; 32]) -> [u8; 32] {
 
     //Shift the result back:
     // result = arr//(2^shift)
+    #[allow(clippy::manual_memcpy)]
     for i in 0..(32-shift) {
         result[i+shift] = arr[i];
     }
@@ -199,7 +203,7 @@ pub fn get_difficulty(target: [u8; 32]) -> [u8; 32] {
     // result = ((MAX_DIFFICULTY * (2^shift)) // target) // (2^shift)
     // result = (MAX_DIFFICULTY * (2^shift)) // (target * (2^shift))
     // result = MAX_DIFFICULTY // target
-    return result;
+    result
 
 }
 
@@ -227,11 +231,11 @@ pub fn compute_new_nbits(prev_time: u32, start_time: u32, prev_target: &mut [u8;
         return target_to_nbits(UNROUNDED_MAX_TARGET);
     }
 
-    return target_to_nbits(*prev_target);
+    target_to_nbits(*prev_target)
 }
 
 pub fn should_diff_adjust(block_height: u32) -> bool {
-    return block_height % DIFF_ADJUSTMENT_INTERVAL == 0;
+    block_height % DIFF_ADJUSTMENT_INTERVAL == 0
 }
 
 //Checks difficulty target (nBits) specified in the block,
@@ -247,15 +251,17 @@ pub fn has_correct_difficulty_target(prev_committed_header: CommittedBlockHeader
         let new_nbits = compute_new_nbits(prev_time, start_time, &mut prev_target);
         msg!("New computed nbits: {:x?}", new_nbits);
         msg!("New target: {:x?}", prev_target);
-        return current_nbits == new_nbits;
+        current_nbits == new_nbits
     } else {
-        return current_nbits == prev_nbits;
+        current_nbits == prev_nbits
     }
 }
 
 //Checks if the timestamp is larger than median of the past block's timestamps (specified in arr and one additional value)
 pub fn is_larger_than_median(arr: [u32; 10], additional: u32, curr_timestamp: u32) -> bool {
     let mut amt = 0;
+    
+    #[allow(clippy::needless_range_loop)]
     for i in 0..10 {
         if curr_timestamp>arr[i] {
             amt += 1;
@@ -265,7 +271,7 @@ pub fn is_larger_than_median(arr: [u32; 10], additional: u32, curr_timestamp: u3
         amt += 1;
     }
 
-    return amt>5;
+    amt>5
 }
 
 pub fn verify_header(header: &BlockHeader, last_commited_header: &mut CommittedBlockHeader, remaining_account: &AccountInfo, _signer: &Signer, program_id: &Pubkey) -> Result<[u8; 32]> {
@@ -298,7 +304,7 @@ pub fn verify_header(header: &BlockHeader, last_commited_header: &mut CommittedB
     //Each block is assigned a unique generated PDA,
     // this is used purely for indexing purposes
     let last_block_hash = header.get_block_hash()?;
-    let (block_header_topic, _block_header_bump) = Pubkey::find_program_address(&[b"header", &last_block_hash], &program_id);
+    let (block_header_topic, _block_header_bump) = Pubkey::find_program_address(&[b"header", &last_block_hash], program_id);
     require!(
         block_header_topic == *remaining_account.key,
         RelayErrorCode::InvalidHeaderTopic
@@ -344,7 +350,7 @@ pub fn verify_header(header: &BlockHeader, last_commited_header: &mut CommittedB
 //Calculates merkle root based on the transaction id and merkle proof,
 // reversed_ prefix is used because bitcoin uses little endian encoding
 pub fn compute_merkle(reversed_txid: &[u8; 32], _tx_index: u32, reversed_merkle_proof: &Vec<[u8; 32]>) -> [u8; 32] {
-    if reversed_merkle_proof.len()==0 {
+    if reversed_merkle_proof.is_empty() {
         return *reversed_txid;
     }
 
@@ -363,8 +369,8 @@ pub fn compute_merkle(reversed_txid: &[u8; 32], _tx_index: u32, reversed_merkle_
             msg.extend_from_slice(&current_hash);
         }
         current_hash = hash::hash(&hash::hash(&msg).to_bytes()).to_bytes();
-        tx_index = tx_index >> 1;
+        tx_index >>= 1;
     }
 
-    return current_hash;
+    current_hash
 }

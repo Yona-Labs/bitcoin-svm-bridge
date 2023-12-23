@@ -35,13 +35,13 @@ impl MainState {
             if pos>=PRUNING_FACTOR_U32 {
                 return 0;
             }
-            return pos as usize;
+            pos as usize
         } else {
             let pos = self.start_height-block_height;
             if pos>=PRUNING_FACTOR_U32 {
                 return PRUNING_FACTOR;
             }
-            return (PRUNING_FACTOR_U32-pos) as usize;
+            (PRUNING_FACTOR_U32-pos) as usize
         }
     }
 
@@ -60,7 +60,7 @@ impl MainState {
         if pos==PRUNING_FACTOR {
             return [0; 32];
         }
-        return self.block_commitments[pos];
+        self.block_commitments[pos]
     }
 
     //Stores the block commitment for the specified block_height in a ring buffer
@@ -76,7 +76,7 @@ impl MainState {
             self.start_height = block_height;
         }
         self.total_blocks += 1;
-        return true;
+        true
     }
 
 }
@@ -102,11 +102,9 @@ impl ForkState {
     
     //Stores block commitment in the array, no ring buffer is implemented here,
     // limiting the maximum fork length to PRUNING_FACTOR blocks
-    pub fn store_block_commitment(&mut self, block_commitment: [u8; 32]) -> bool {
+    pub fn store_block_commitment(&mut self, block_commitment: [u8; 32]) {
         self.block_commitments[self.length as usize] = block_commitment;
         self.length += 1;
-
-        return true;
     }
 
 }
