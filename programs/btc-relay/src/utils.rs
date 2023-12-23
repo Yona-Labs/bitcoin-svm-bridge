@@ -281,12 +281,8 @@ pub fn verify_header(header: &BlockHeader, last_commited_header: &mut CommittedB
     //Should be disabled for testnet, since if no valid block is
     // found on testnet in 20 minutes, the difficulty drops to 1
     //Implementing this functionality is beyond scope of this implementation,
-    // so nBits checking is disabled for TESTNET,
-    // comment the following code block to make this compatible with TESTNET
-    //
-    // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-    // !!!!!!!!!!!!!!  DISABLE FOR TESTNET  !!!!!!!!!!!!!!
-    // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+    // so nBits checking is disabled for TESTNET
+    #[cfg(feature = "bitcoin_mainnet")]
     {
         require!(
             has_correct_difficulty_target(*last_commited_header, header.nbits),
