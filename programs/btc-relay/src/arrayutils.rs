@@ -64,7 +64,3 @@ pub fn gt_arr(arr1: [u8; 32], arr2: [u8; 32]) -> bool {
     }
     false
 }
-
-pub fn lt_arr(arr1: [u8; 32], arr2: [u8; 32]) -> bool {
-    gt_arr(arr2, arr1)
-}
