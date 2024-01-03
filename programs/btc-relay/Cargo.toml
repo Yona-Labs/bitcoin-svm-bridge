@@ -14,7 +14,8 @@ no-idl = []
 no-log-ix-name = []
 cpi = ["no-entrypoint"]
 default = []
-bitcoin_mainnet = []
+bitcoin_testnet = []
+mocked = []
 
 [profile.release]
 overflow-checks = true

@@ -358,29 +358,37 @@ pub mod btc_relay {
     //Can be called as a CPI or a standalone instruction, that gets executed
     // before the instructions that depend on transaction verification
     pub fn verify_transaction(ctx: Context<VerifyTransaction>, reversed_txid: [u8; 32], confirmations: u32, tx_index: u32, reversed_merkle_proof: Vec<[u8; 32]>, commited_header: CommittedBlockHeader) -> Result<()> {
-        let block_height = commited_header.blockheight;
+        #[cfg(feature = "mocked")]
+        {
+            return Ok(());
+        }
+        
+        #[cfg(not(feature = "mocked"))]
+        {
+            let block_height = commited_header.blockheight;
 
-        let main_state = ctx.accounts.main_state.load()?;
+            let main_state = ctx.accounts.main_state.load()?;
 
-        require!(
-            main_state.block_height - block_height + 1 >= confirmations,
-            RelayErrorCode::BlockConfirmations
-        );
+            require!(
+                main_state.block_height - block_height + 1 >= confirmations,
+                RelayErrorCode::BlockConfirmations
+            );
 
-        let commit_hash = commited_header.get_commit_hash()?;
-        require!(
-            commit_hash == main_state.get_commitment(block_height),
-            RelayErrorCode::PrevBlockCommitment
-        );
+            let commit_hash = commited_header.get_commit_hash()?;
+            require!(
+                commit_hash == main_state.get_commitment(block_height),
+                RelayErrorCode::PrevBlockCommitment
+            );
 
-        let computed_merkle = utils::compute_merkle(&reversed_txid, tx_index, &reversed_merkle_proof);
+            let computed_merkle = utils::compute_merkle(&reversed_txid, tx_index, &reversed_merkle_proof);
 
-        require!(
-            computed_merkle == commited_header.header.merkle_root,
-            RelayErrorCode::MerkleRoot
-        );
+            require!(
+                computed_merkle == commited_header.header.merkle_root,
+                RelayErrorCode::MerkleRoot
+            );
 
-        Ok(())
+            Ok(())
+        }
     }
 
     //Verifies blockheight of the main chain
@@ -393,22 +401,42 @@ pub mod btc_relay {
     //This can be called a standalone instruction, that gets executed
     // before the instructions that depend on bitcoin relay having a specific blockheight
     pub fn block_height(ctx: Context<BlockHeight>, value: u32, operation: u32) -> Result<()> {
-        let main_state = ctx.accounts.main_state.load()?;
-        let block_height = main_state.block_height;
+        #[cfg(feature = "mocked")]
+        {
+            require!(
+                match operation {
+                    0 => 845414 < value,
+                    1 => 845414 <= value,
+                    2 => 845414 > value,
+                    3 => 845414 >= value,
+                    4 => 845414 == value,
+                    _ => false
+                },
+                RelayErrorCode::InvalidBlockheight
+            );
 
-        require!(
-            match operation {
-                0 => block_height < value,
-                1 => block_height <= value,
-                2 => block_height > value,
-                3 => block_height >= value,
-                4 => block_height == value,
-                _ => false
-            },
-            RelayErrorCode::InvalidBlockheight
-        );
+            return Ok(());
+        }
 
-        Ok(())
+        #[cfg(not(feature = "mocked"))]
+        {
+            let main_state = ctx.accounts.main_state.load()?;
+            let block_height = main_state.block_height;
+
+            require!(
+                match operation {
+                    0 => block_height < value,
+                    1 => block_height <= value,
+                    2 => block_height > value,
+                    3 => block_height >= value,
+                    4 => block_height == value,
+                    _ => false
+                },
+                RelayErrorCode::InvalidBlockheight
+            );
+
+            Ok(())
+        }
     }
 
 }

@@ -109,6 +109,7 @@ pub struct VerifyTransaction<'info> {
     #[account(mut)]
     pub signer: Signer<'info>,
 
+    #[cfg(not(feature = "mocked"))]
     #[account(
         seeds = [b"state".as_ref()],
         bump
@@ -121,6 +122,8 @@ pub struct BlockHeight<'info> {
     #[account(mut)]
     pub signer: Signer<'info>,
 
+
+    #[cfg(not(feature = "mocked"))]
     #[account(
         seeds = [b"state".as_ref()],
         bump
