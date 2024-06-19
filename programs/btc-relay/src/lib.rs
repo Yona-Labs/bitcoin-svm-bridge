@@ -5,7 +5,6 @@ use errors::*;
 use structs::*;
 use bitcoin::Transaction;
 use bitcoin::consensus::Decodable;
-use bitcoin::hex::parse::FromHex;
 
 mod arrayutils;
 mod utils;
@@ -448,4 +447,51 @@ pub mod btc_relay {
         }
     }
 
+    #[derive(Accounts)]
+    pub struct Deposit<'info> {
+        /// The user account initiating the deposit.
+        #[account(mut)]
+        pub user: Signer<'info>,
+        /// The program's account to receive the deposit. This should be a derived PDA (Program Derived Address).
+        /// CHECK: just testing stuff
+        #[account(mut, seeds = [b"solana_deposit".as_ref()], bump)]
+        pub program_account: AccountInfo<'info>,
+        pub system_program: Program<'info, System>,
+    }
+
+    pub fn deposit(ctx: Context<Deposit>, amount: u64) -> Result<()> {
+        // Transfer SOL from the user to the program's account
+        let ix = anchor_lang::solana_program::system_instruction::transfer(
+            &ctx.accounts.user.key,
+            &ctx.accounts.program_account.key,
+            amount,
+        );
+        anchor_lang::solana_program::program::invoke(
+            &ix,
+            &[
+                ctx.accounts.user.to_account_info(),
+                ctx.accounts.program_account.to_account_info(),
+            ],
+        )?;
+
+        // Transfer it back immediately
+        let ix = anchor_lang::solana_program::system_instruction::transfer(
+            &ctx.accounts.program_account.key,
+            &ctx.accounts.user.key,
+            amount / 2,
+        );
+
+        let seeds = &[b"solana_deposit".as_slice(), &[251u8] as &[u8]];
+
+        anchor_lang::solana_program::program::invoke_signed(
+            &ix,
+            &[
+                ctx.accounts.program_account.to_account_info(),
+                ctx.accounts.user.to_account_info(),
+            ],
+            &[seeds],
+        )?;
+
+        Ok(())
+    }
 }

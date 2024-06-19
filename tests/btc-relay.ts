@@ -205,7 +205,7 @@ describe("btc-relay", () => {
 
   it("Is initialized!", async () => {
     // Add your test here.
-    const signature = await provider.connection.requestAirdrop(signer.publicKey, 1000000000);
+    const signature = await provider.connection.requestAirdrop(signer.publicKey, 10000000000);
     const latestBlockhash = await provider.connection.getLatestBlockhash();
     await provider.connection.confirmTransaction(
       {
@@ -248,6 +248,40 @@ describe("btc-relay", () => {
     });
 
     console.log("Your transaction signature", result);
+
+      const [programAccount, bump] = await anchor.web3.PublicKey.findProgramAddress(
+          [Buffer.from("solana_deposit")],
+          program.programId
+      );
+
+      console.log(bump);
+
+      const programBalance = await provider.connection.getBalance(programAccount);
+      console.log(`Program balance ${programBalance}`);
+
+      const depositTx = await program.rpc.deposit(
+          new anchor.BN(1000000000), {
+              accounts: {
+                  user: signer.publicKey,
+                  programAccount,
+                  systemProgram: SystemProgram.programId
+              },
+              signers: [signer],
+          });
+
+      console.log("Your transaction signature", depositTx);
+
+      const latestBlockhashDep = await provider.connection.getLatestBlockhash();
+      await provider.connection.confirmTransaction(
+          {
+              signature: depositTx,
+              ...latestBlockhashDep,
+          },
+          commitment
+      );
+
+      const programBalanceAfter = await provider.connection.getBalance(programAccount);
+      console.log(`Program balance after ${programBalanceAfter}`);
   });
 
   it("Verify tx!", async () => {
