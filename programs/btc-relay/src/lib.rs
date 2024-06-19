@@ -3,6 +3,9 @@ use instructions::*;
 use events::*;
 use errors::*;
 use structs::*;
+use bitcoin::Transaction;
+use bitcoin::consensus::Decodable;
+use bitcoin::hex::parse::FromHex;
 
 mod arrayutils;
 mod utils;
@@ -357,15 +360,21 @@ pub mod btc_relay {
     //Verifies transaction block inclusion proof, requiring certain amount of confirmations
     //Can be called as a CPI or a standalone instruction, that gets executed
     // before the instructions that depend on transaction verification
-    pub fn verify_transaction(ctx: Context<VerifyTransaction>, reversed_txid: [u8; 32], confirmations: u32, tx_index: u32, reversed_merkle_proof: Vec<[u8; 32]>, commited_header: CommittedBlockHeader) -> Result<()> {
+    pub fn verify_transaction(ctx: Context<VerifyTransaction>, tx_bytes: Vec<u8>, confirmations: u32, tx_index: u32, reversed_merkle_proof: Vec<[u8; 32]>, commited_header: CommittedBlockHeader) -> Result<()> {
         #[cfg(feature = "mocked")]
         {
             return Ok(());
         }
-        
+
         #[cfg(not(feature = "mocked"))]
         {
             let block_height = commited_header.blockheight;
+
+            let bitcoin_tx = Transaction::consensus_decode(&mut tx_bytes.as_slice()).unwrap();
+
+            let lamports = ctx.accounts.main_state.to_account_info().lamports;
+            msg!("Got lamports {}", **lamports.borrow());
+            msg!("Bitcoin tx output amount {}", bitcoin_tx.output[0].value);
 
             let main_state = ctx.accounts.main_state.load()?;
 
@@ -380,7 +389,7 @@ pub mod btc_relay {
                 RelayErrorCode::PrevBlockCommitment
             );
 
-            let computed_merkle = utils::compute_merkle(&reversed_txid, tx_index, &reversed_merkle_proof);
+            let computed_merkle = utils::compute_merkle(bitcoin_tx.compute_txid().as_ref(), tx_index, &reversed_merkle_proof);
 
             require!(
                 computed_merkle == commited_header.header.merkle_root,
