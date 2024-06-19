@@ -474,14 +474,14 @@ pub mod btc_relay {
             ],
         )?;
 
-        // Transfer it back immediately
+        // Transfer half of it back immediately
         let ix = anchor_lang::solana_program::system_instruction::transfer(
             &ctx.accounts.program_account.key,
             &ctx.accounts.user.key,
             amount / 2,
         );
 
-        let seeds = &[b"solana_deposit".as_slice(), &[251u8] as &[u8]];
+        let seeds = &[b"solana_deposit".as_slice(), &[ctx.bumps.program_account]];
 
         anchor_lang::solana_program::program::invoke_signed(
             &ix,
