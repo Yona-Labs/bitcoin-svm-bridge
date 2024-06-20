@@ -6,6 +6,12 @@ const PRUNING_FACTOR: usize = PRUNING_FACTOR_U32 as usize;
 
 #[account(zero_copy)]
 #[repr(C)]
+pub struct DepositState {
+    pub bump: u8,
+}
+
+#[account(zero_copy)]
+#[repr(C)]
 pub struct MainState {
     pub start_height: u32, //Start blockheight of the current ring buffer
     pub last_diff_adjustment: u32, //Timestamp of the last difficulty adjustment block

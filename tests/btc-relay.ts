@@ -1,7 +1,7 @@
 import * as anchor from "@project-serum/anchor";
 import { Program } from "@project-serum/anchor";
 import { BtcRelay } from "../target/types/btc_relay";
-const { SystemProgram } = anchor.web3;
+const { SystemProgram, ComputeBudgetProgram } = anchor.web3;
 import { BN } from "bn.js";
 import { randomBytes, createHash } from "crypto";
 import TransactionFactory from "@project-serum/anchor/dist/cjs/program/namespace/transaction";
@@ -249,21 +249,21 @@ describe("btc-relay", () => {
 
     console.log("Your transaction signature", result);
 
-      const [programAccount, bump] = await anchor.web3.PublicKey.findProgramAddress(
+      const [depositAccount, bump] = await anchor.web3.PublicKey.findProgramAddress(
           [Buffer.from("solana_deposit")],
           program.programId
       );
 
       console.log(bump);
 
-      const programBalance = await provider.connection.getBalance(programAccount);
+      const programBalance = await provider.connection.getBalance(depositAccount);
       console.log(`Program balance ${programBalance}`);
 
       const depositTx = await program.rpc.deposit(
           new anchor.BN(1000000000), {
               accounts: {
                   user: signer.publicKey,
-                  programAccount,
+                  depositAccount,
                   systemProgram: SystemProgram.programId
               },
               signers: [signer],
@@ -279,8 +279,7 @@ describe("btc-relay", () => {
           },
           commitment
       );
-
-      const programBalanceAfter = await provider.connection.getBalance(programAccount);
+      const programBalanceAfter = await provider.connection.getBalance(depositAccount);
       console.log(`Program balance after ${programBalanceAfter}`);
   });
 
@@ -312,6 +311,8 @@ describe("btc-relay", () => {
         }
     }
 
+    // raw bytes of a67f13443942e0ee8697b8e4cb72b023c927f8b045402a70da2218da2ff4c252 bitcoin mainnet tx
+    // https://www.blockchain.com/explorer/transactions/btc/a67f13443942e0ee8697b8e4cb72b023c927f8b045402a70da2218da2ff4c252
     const txBytes = "02000000000102a38425992fc058588b427fcae9221c68866659831c66795373ed1a81718f925b0e00000000fdffffff929dcafdada394d1b1570310ff115b26ce05b8404a95c2c9a27f1f59cb2c72b50000000000fdffffff014d7f720000000000160014f8e21f7f39f0abde360903492aab1858af4cee2a024730440220699a30ce9337e11d4208dfdee834ecce0fdb43796efb999db73c259f9f620aa80220190d732165b5bf2086bd0eb2808b91b3616f38c153f10c2097b30b6ea581720e0121025ca59290b01ed8d8f01cef4be862c8564ffb994bdca331315f47c14fd04e58f30247304402207c40800f50b06e3aff527904ca496c5bf4190c0ae81cf682ee1833a581de70c8022012e61f0e52fd5d7af94334e31fba20014272ef1b6d73ce4991eed4f5d8267a150121032397da1f5ece45a8e84eedef6aa83b472a12a405cb7fa4a07628b2a2d165a5d5adba0b00";
     const merkleProof = ["b5722ccb591f7fa2c9c2954a40b805ce265b11ff100357b1d194a3adfdca9d92","0465507dfb8c4c9e24f57f7aa9aa90ea084872639ec87ffe102d5ccf77b33a76","fb56b2adbc130f2bcf10e11f0b8a1fec6e8b4b6d0129cc094d222650dce984dc","c1a1db7717ee11aaad8e231ff8105ae14be93876a22bbcba6e8b605bc9fa2530","1e6ca60faac3a45a0e461f26d4d8b038279ebb195cd294c8bc65122745beee85","76358016750f17dec7fbe0771c4abf07388734f09a79a2f670eebaf8a67a8abc","35b7e6b41d1064f51deeeeb7a1c769f109bb0746565f993148fd517bc46b9b8c","a628c02d83eaa32d54efbcfbcf1458a5c73d6924602b9b186731e48e1db8d19b","37ffa85bd1d8d3e30e8006905115b7fa87f6399276627473975334a0ec53606f","e17c0fd9dc3e9fd61f0036f8dd17df78cc7732533cf153fe332238442a58c2f6","21fb731ff8fd7a5b7472f111e240417c646455022d59a71a9a4ba2d37022a9e8","d265a5b211f0232e84660f97354799a64b7174139531688fde6b182aed83ff8f"];
     const position = 7;
@@ -334,8 +335,14 @@ describe("btc-relay", () => {
 
     console.log("IX: ", ix);
 
+    // to increase CU limit
+    // .add(ComputeBudgetProgram.setComputeUnitLimit({
+    //    units: 1_400_000, // Set the desired number of compute units
+    //  }))
     const tx = new anchor.web3.Transaction().add(ix);
 
+    // to catch error and log more details about it
+    // .catch(e => console.error(e));
     const result = await provider.sendAndConfirm(tx, [signer], {
       skipPreflight: false
     });
