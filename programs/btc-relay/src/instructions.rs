@@ -1,7 +1,7 @@
 use anchor_lang::prelude::*;
 
-use crate::structs::*;
 use crate::state::*;
+use crate::structs::*;
 
 #[derive(Accounts)]
 #[instruction(
@@ -27,7 +27,7 @@ pub struct Initialize<'info> {
     )]
     pub header_topic: AccountInfo<'info>,
 
-    pub system_program: Program<'info, System>
+    pub system_program: Program<'info, System>,
 }
 
 #[derive(Accounts)]
@@ -40,7 +40,7 @@ pub struct SubmitBlockHeaders<'info> {
         seeds = [b"state".as_ref()],
         bump
     )]
-    pub main_state: AccountLoader<'info, MainState>
+    pub main_state: AccountLoader<'info, MainState>,
 }
 
 #[derive(Accounts)]
@@ -53,7 +53,7 @@ pub struct SubmitShortForkHeaders<'info> {
         seeds = [b"state".as_ref()],
         bump
     )]
-    pub main_state: AccountLoader<'info, MainState>
+    pub main_state: AccountLoader<'info, MainState>,
 }
 
 #[derive(Accounts)]
@@ -82,7 +82,7 @@ pub struct SubmitForkHeaders<'info> {
     )]
     pub fork_state: AccountLoader<'info, ForkState>,
 
-    pub system_program: Program<'info, System>
+    pub system_program: Program<'info, System>,
 }
 
 #[derive(Accounts)]
@@ -92,7 +92,6 @@ pub struct SubmitForkHeaders<'info> {
 pub struct CloseForkAccount<'info> {
     #[account(mut)]
     pub signer: Signer<'info>,
-
     #[account(
         mut,
         seeds = [b"fork".as_ref(), fork_id.to_le_bytes().as_ref(), signer.key.to_bytes().as_ref()],
@@ -100,33 +99,90 @@ pub struct CloseForkAccount<'info> {
         close = signer
     )]
     pub fork_state: AccountLoader<'info, ForkState>,
-
-    pub system_program: Program<'info, System>
+    pub system_program: Program<'info, System>,
 }
 
 #[derive(Accounts)]
 pub struct VerifyTransaction<'info> {
     #[account(mut)]
     pub signer: Signer<'info>,
-
     #[cfg(not(feature = "mocked"))]
     #[account(
         seeds = [b"state".as_ref()],
         bump
     )]
-    pub main_state: AccountLoader<'info, MainState>
+    pub main_state: AccountLoader<'info, MainState>,
+    #[account(mut, seeds = [b"solana_deposit".as_ref()], bump)]
+    pub deposit_account: AccountLoader<'info, DepositState>,
 }
 
 #[derive(Accounts)]
 pub struct BlockHeight<'info> {
     #[account(mut)]
     pub signer: Signer<'info>,
-
-
     #[cfg(not(feature = "mocked"))]
     #[account(
         seeds = [b"state".as_ref()],
         bump
     )]
-    pub main_state: AccountLoader<'info, MainState>
+    pub main_state: AccountLoader<'info, MainState>,
+}
+
+#[derive(Accounts)]
+pub struct Deposit<'info> {
+    /// The user account initiating the deposit.
+    #[account(mut)]
+    pub user: Signer<'info>,
+    /// The program's account to receive the deposit. This should be a derived PDA (Program Derived Address).
+    #[account(init, seeds = [b"solana_deposit".as_ref()], bump, payer = user, space = 8 + 1)]
+    pub deposit_account: AccountLoader<'info, DepositState>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+#[instruction(
+    tx_id: [u8; 32],
+    tx_size: u64
+)]
+pub struct InitBigTxVerify<'info> {
+    /// The user account initiating the verification.
+    #[account(mut)]
+    pub user: Signer<'info>,
+    /// The program's account used to store transaction's data. This should be a derived PDA (Program Derived Address).
+    #[account(init, seeds = [tx_id.as_slice()], bump, payer = user, space = 8 + 4 + tx_size as usize)]
+    pub tx_account: Account<'info, BigTxState>,
+    pub system_program: Program<'info, System>,
+    #[account(
+        seeds = [b"state".as_ref()],
+        bump
+    )]
+    pub main_state: AccountLoader<'info, MainState>,
+}
+
+#[derive(Accounts)]
+#[instruction(
+    tx_id: [u8; 32]
+)]
+pub struct StoreTxBytes<'info> {
+    /// The user account initiating the verification.
+    #[account(mut)]
+    pub user: Signer<'info>,
+    /// The program's account used to store transaction's data. This should be a derived PDA (Program Derived Address).
+    #[account(mut, seeds = [tx_id.as_slice()], bump)]
+    pub tx_account: Account<'info, BigTxState>,
+}
+
+#[derive(Accounts)]
+#[instruction(
+    tx_id: [u8; 32]
+)]
+pub struct FinalizeTx<'info> {
+    /// The user account initiating the verification.
+    #[account(mut)]
+    pub user: Signer<'info>,
+    /// The program's account used to store transaction's data. This should be a derived PDA (Program Derived Address).
+    #[account(mut, seeds = [tx_id.as_slice()], bump)]
+    pub tx_account: Account<'info, BigTxState>,
+    #[account(mut, seeds = [b"solana_deposit".as_ref()], bump)]
+    pub deposit_account: AccountLoader<'info, DepositState>,
 }
