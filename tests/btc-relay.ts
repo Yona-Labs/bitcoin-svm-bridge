@@ -252,9 +252,7 @@ describe("btc-relay", () => {
             [Buffer.from("solana_deposit")],
             program.programId
         );
-
-        console.log(bump);
-
+        
         const programBalance = await provider.connection.getBalance(depositAccount);
         console.log(`Program balance ${programBalance}`);
 
