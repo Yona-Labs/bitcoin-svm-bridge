@@ -12,10 +12,10 @@ mod errors;
 mod events;
 mod instructions;
 mod state;
-mod structs;
+pub mod structs;
 mod utils;
 
-declare_id!("AVAcrXmp7Y71q3uv3zkM5yM8rd9ASyBafQgcaVduFgN3");
+declare_id!("5eYiNZmKvAiJLERXyf9YhkEUjiriWsNM5cLwF6xupmyT");
 
 #[program]
 pub mod btc_relay {
@@ -521,6 +521,9 @@ pub mod btc_relay {
         );
 
         let computed_merkle = utils::compute_merkle(&tx_id, tx_index, &reversed_merkle_proof);
+
+        msg!("Computed merkle {:?}", computed_merkle);
+        msg!("Header root {:?}", commited_header.header.merkle_root);
 
         require!(
             computed_merkle == commited_header.header.merkle_root,
