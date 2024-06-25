@@ -3,6 +3,10 @@ members = [
     "programs/*"
 ]
 
+exclude = [
+    "block_relayer"
+]
+
 [profile.release]
 overflow-checks = true
 lto = "fat"
