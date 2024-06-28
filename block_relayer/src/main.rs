@@ -46,8 +46,6 @@ fn main() {
         .unwrap();
     proof.merkle.iter_mut().for_each(|data| data.reverse());
 
-    // println!("Proof {proof:?}");
-
     let block_header = BlockHeader {
         version: 541065220,
         reversed_prev_blockhash: [
