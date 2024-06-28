@@ -2,7 +2,7 @@ use anchor_lang::{prelude::*, solana_program::hash};
 
 //Struct representing bitcoin block header
 //https://www.oreilly.com/library/view/mastering-bitcoin/9781491902639/ch07.html#block_header
-#[derive(Debug, Clone, AnchorSerialize, AnchorDeserialize, Copy)]
+#[derive(Debug, Clone, AnchorSerialize, AnchorDeserialize, Copy, Eq, PartialEq)]
 pub struct BlockHeader {
     pub version: u32, //A version number to track software/protocol upgrades
     pub reversed_prev_blockhash: [u8; 32], //A reference to the hash of the previous (parent) block in the chain

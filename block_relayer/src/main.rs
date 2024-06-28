@@ -1,3 +1,4 @@
+use std::env;
 use std::rc::Rc;
 use std::str::FromStr;
 
@@ -6,14 +7,20 @@ use anchor_client::{Client as AnchorClient, Cluster};
 use bitcoin::consensus::Decodable;
 use bitcoin::hashes::Hash;
 use bitcoin::hex::{DisplayHex, FromHex};
-use btc_relay::accounts::{Deposit, FinalizeTx, InitBigTxVerify, Initialize, StoreTxBytes};
+use bitcoin::Txid;
+use btc_relay::accounts::{
+    Deposit, FinalizeTx, InitBigTxVerify, Initialize, StoreTxBytes, SubmitBlockHeaders,
+    VerifyTransaction,
+};
 use btc_relay::instruction::{
     Deposit as DepositInstruction, FinalizeTxProcessing as FinalizeTxInstruction,
     InitBigTxVerify as InitBigTxVerifyInstruction, Initialize as InitializeInstruction,
-    StoreTxBytes as StoreTxBytesInstruction,
+    StoreTxBytes as StoreTxBytesInstruction, SubmitBlockHeaders as SubmitBlockHeadersInstruction,
+    VerifySmallTx as VerifySmallTxInstruction,
 };
 use btc_relay::program::BtcRelay;
 use btc_relay::structs::{BlockHeader, CommittedBlockHeader};
+use electrum_client::bitcoin::hashes::Hash as ElectrumHash;
 use electrum_client::{Client as ElectrumClient, ElectrumApi};
 use solana_client::rpc_client::RpcClient;
 use solana_sdk::instruction::{AccountMeta, Instruction};
@@ -28,12 +35,59 @@ use solana_sdk::{
 };
 
 fn main() {
-    let client = ElectrumClient::new("tcp://electrum.blockstream.info:50001").unwrap();
-    let res = client.server_features().unwrap();
-    println!("{:#?}", res);
+    let electrum_client = ElectrumClient::new("tcp://electrum.blockstream.info:50001").unwrap();
 
-    let subscribe = client.block_headers_subscribe().unwrap();
-    println!("{:?}", subscribe);
+    let tx_id_hex = "aa118f3dccd6d39b72d12e133b8e007dd17c1779eddff5714ab993e43035ff55";
+    let tx_id = Txid::from_str(tx_id_hex).unwrap();
+    let tx_bytes = electrum_client.transaction_get_raw(&tx_id).unwrap();
+
+    let mut proof = electrum_client
+        .transaction_get_merkle(&tx_id, 768686)
+        .unwrap();
+    proof.merkle.iter_mut().for_each(|data| data.reverse());
+
+    // println!("Proof {proof:?}");
+
+    let block_header = BlockHeader {
+        version: 541065220,
+        reversed_prev_blockhash: [
+            139, 67, 181, 184, 213, 211, 105, 125, 12, 246, 47, 248, 73, 161, 241, 44, 181, 146,
+            16, 138, 254, 221, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        ],
+        merkle_root: [
+            249, 15, 28, 171, 45, 98, 137, 134, 153, 170, 220, 149, 126, 248, 16, 219, 250, 39,
+            227, 139, 56, 10, 175, 63, 31, 24, 40, 28, 243, 155, 125, 33,
+        ],
+        timestamp: 1671837609,
+        nbits: 386397584,
+        nonce: 3268247420,
+    };
+
+    let commited_header = CommittedBlockHeader {
+        chain_work: [
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 60, 39, 152, 233, 4, 108,
+            127, 40, 200, 233, 11, 98,
+        ],
+        header: block_header,
+        last_diff_adjustment: 1671463076,
+        blockheight: 768686,
+        prev_block_timestamps: [
+            1671463076, 1671463076, 1671463076, 1671463076, 1671463076, 1671463076, 1671463076,
+            1671463076, 1671463076, 1671463076,
+        ],
+    };
+
+    let electrum_block_header = electrum_client.block_header(768687).unwrap();
+    // println!("{electrum_block_header:?}");
+
+    let block_header_from_electrum = BlockHeader {
+        version: electrum_block_header.version.to_consensus() as u32,
+        reversed_prev_blockhash: electrum_block_header.prev_blockhash.to_byte_array(),
+        merkle_root: electrum_block_header.merkle_root.to_byte_array(),
+        timestamp: electrum_block_header.time,
+        nbits: electrum_block_header.bits.to_consensus(),
+        nonce: electrum_block_header.nonce,
+    };
 
     // Connect to the Yona devnet
     let rpc_url = "http://devnet-rpc.yona.network:8899".to_string();
@@ -46,7 +100,9 @@ fn main() {
 
     let relay_program = BtcRelay::id();
     let (deposit_account, _) = Pubkey::find_program_address(&[b"solana_deposit"], &relay_program);
+    // println!("Deposit account {deposit_account}");
 
+    /*
     // Create the transfer instruction
     let instruction =
         system_instruction::transfer(&sender.pubkey(), &deposit_account, 4_000_000_000);
@@ -70,33 +126,86 @@ fn main() {
         .expect("Failed to send transaction");
 
     println!("Transaction successful! Signature: {}", signature);
+     */
 
     let signer = Rc::new(sender);
     let cluster = Cluster::Custom(rpc_url, ws_url);
     let client = AnchorClient::new_with_options(cluster, signer, CommitmentConfig::confirmed());
 
-    println!("Relay program ID {}", relay_program);
+    // println!("Relay program ID {}", relay_program);
 
     let program = client.program(relay_program).unwrap();
 
     let (main_state, _) = Pubkey::find_program_address(&[b"state"], &relay_program);
 
-    let block_header = BlockHeader {
-        version: 541065220,
-        reversed_prev_blockhash: [
-            139, 67, 181, 184, 213, 211, 105, 125, 12, 246, 47, 248, 73, 161, 241, 44, 181, 146,
-            16, 138, 254, 221, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    let (header_account, _) = Pubkey::find_program_address(
+        &[
+            b"header",
+            block_header_from_electrum
+                .get_block_hash()
+                .unwrap()
+                .as_slice(),
         ],
-        merkle_root: [
-            249, 15, 28, 171, 45, 98, 137, 134, 153, 170, 220, 149, 126, 248, 16, 219, 250, 39,
-            227, 139, 56, 10, 175, 63, 31, 24, 40, 28, 243, 155, 125, 33,
-        ],
-        timestamp: 1671837609,
-        nbits: 386397584,
-        nonce: 3268247420,
-    };
+        &relay_program,
+    );
+
+    let mint_receiver = env::args()
+        .nth(1)
+        .expect("Mint receiver address is not provided");
+    let mint_receiver =
+        Pubkey::from_str(&mint_receiver).expect("Provided argument is not a valid Yona address");
+
+    println!("Attempting to verify Bitcoin transaction {tx_id_hex}");
+
+    let res = program
+        .request()
+        .accounts(VerifyTransaction {
+            signer: program.payer(),
+            main_state,
+            deposit_account,
+            mint_receiver,
+        })
+        .args(VerifySmallTxInstruction {
+            tx_bytes,
+            confirmations: 1,
+            tx_index: proof.pos as u32,
+            commited_header,
+            reversed_merkle_proof: proof.merkle,
+        })
+        .send()
+        .unwrap();
+    println!("Verify transaction signature {res}");
 
     /*
+    let header_account = AccountMeta::new(header_account, false);
+
+    let res = program
+        .request()
+        .accounts(SubmitBlockHeaders {
+            signer: program.payer(),
+            main_state,
+        })
+        .accounts(vec![header_account])
+        .args(SubmitBlockHeadersInstruction {
+            data: vec![block_header_from_electrum],
+            commited_header: CommittedBlockHeader {
+                header: block_header,
+                blockheight: 768686,
+                chain_work: [
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 60, 39, 152, 233,
+                    4, 108, 127, 40, 200, 233, 11, 98,
+                ],
+                last_diff_adjustment: 1671463076,
+                prev_block_timestamps: [
+                    1671463076, 1671463076, 1671463076, 1671463076, 1671463076, 1671463076,
+                    1671463076, 1671463076, 1671463076, 1671463076,
+                ],
+            },
+        })
+        .send()
+        .unwrap();
+    println!("Submit block headers tx {res}");
+
     let res = program
         .request()
         .accounts(Deposit {
@@ -147,7 +256,7 @@ fn main() {
     let tx_bytes: Vec<u8> = bitcoin::hex::FromHex::from_hex(big_tx_hex).unwrap();
 
     let tx = bitcoin::Transaction::consensus_decode(&mut tx_bytes.as_slice()).unwrap();
-    let tx_id = tx.compute_txid();
+    let tx_id = tx.txid();
 
     let tx_id_bytes = tx_id.to_byte_array();
 
@@ -176,8 +285,6 @@ fn main() {
             bytes
         })
         .collect();
-
-    println!("{}", tx_id_bytes.to_lower_hex_string());
 
     /*
     let res = program
@@ -231,6 +338,7 @@ fn main() {
 
 
      */
+    /*
     let balance = program.rpc().get_balance(&deposit_account).unwrap();
     println!("Deposit address {deposit_account} balance {balance}");
 
@@ -249,4 +357,6 @@ fn main() {
         .unwrap();
 
     println!("{res}");
+
+     */
 }

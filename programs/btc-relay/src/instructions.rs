@@ -114,6 +114,8 @@ pub struct VerifyTransaction<'info> {
     pub main_state: AccountLoader<'info, MainState>,
     #[account(mut, seeds = [b"solana_deposit".as_ref()], bump)]
     pub deposit_account: AccountLoader<'info, DepositState>,
+    #[account(mut)]
+    pub mint_receiver: SystemAccount<'info>,
 }
 
 #[derive(Accounts)]

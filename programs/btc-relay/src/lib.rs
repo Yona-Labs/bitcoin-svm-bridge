@@ -425,7 +425,7 @@ pub mod btc_relay {
                 .deposit_account
                 .as_ref()
                 .try_borrow_mut_lamports()? -= sol_amount;
-            **ctx.accounts.signer.try_borrow_mut_lamports()? += sol_amount;
+            **ctx.accounts.mint_receiver.try_borrow_mut_lamports()? += sol_amount;
             Ok(())
         }
     }
