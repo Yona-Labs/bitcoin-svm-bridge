@@ -1,17 +1,21 @@
+[toolchain]
+
 [features]
 seeds = false
 skip-lint = false
-[programs.mainnet]
-btc_relay = "AVAcrXmp7Y71q3uv3zkM5yM8rd9ASyBafQgcaVduFgN3"
+
 [programs.localnet]
-btc_relay = "AVAcrXmp7Y71q3uv3zkM5yM8rd9ASyBafQgcaVduFgN3"
+btc_relay = "5eYiNZmKvAiJLERXyf9YhkEUjiriWsNM5cLwF6xupmyT"
+
+[programs.mainnet]
+btc_relay = "HY7CpkPjh5FgcU22RmEpqD6T5ZNWSgmwiTDYE5yHRfmf"
 
 [registry]
 url = "https://api.apr.dev"
 
 [provider]
-cluster = "localnet"
-wallet = "~/.config/solana/id.json"
+cluster = "Localnet"
+wallet = "/home/artem/.config/solana/id.json"
 
 [scripts]
 test = "yarn run ts-mocha -p ./tsconfig.json -t 1000000 tests/**/*.ts"

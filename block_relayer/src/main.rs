@@ -1,25 +1,20 @@
 use std::env;
 use std::rc::Rc;
-use std::str::FromStr;
 
 use anchor_client::anchor_lang::prelude::AccountMeta;
 use anchor_client::anchor_lang::Id;
-use anchor_client::{Client as AnchorClient, Cluster};
-use bitcoin::consensus::Decodable;
-use bitcoin::hashes::Hash;
-use bitcoin::hex::FromHex;
-use bitcoin::Txid;
+use anchor_client::solana_sdk::signature::{read_keypair_file, Keypair};
+use anchor_client::solana_sdk::{
+    commitment_config::CommitmentConfig, pubkey::Pubkey, signature::Signer,
+};
+use anchor_client::{Client as AnchorClient, Cluster, Program};
 use bitcoincore_rpc::bitcoin::hashes::Hash as BitcoinRpcHash;
 use bitcoincore_rpc::{Auth, Client as BitcoinRpcClient, RpcApi};
-use electrum_client::bitcoin::hashes::Hash as ElectrumHash;
-use electrum_client::{Client as ElectrumClient, ElectrumApi};
-use solana_client::rpc_client::RpcClient;
-use solana_sdk::signature::{read_keypair_file, Keypair};
-use solana_sdk::{commitment_config::CommitmentConfig, pubkey::Pubkey, signature::Signer};
 
-use btc_relay::accounts::{SubmitBlockHeaders, VerifyTransaction};
+use btc_relay::accounts::{Initialize, SubmitBlockHeaders, VerifyTransaction};
 use btc_relay::instruction::{
-    SubmitBlockHeaders as SubmitBlockHeadersInstruction, VerifySmallTx as VerifySmallTxInstruction,
+    Initialize as InitializeInstruction, SubmitBlockHeaders as SubmitBlockHeadersInstruction,
+    VerifySmallTx as VerifySmallTxInstruction,
 };
 use btc_relay::program::BtcRelay;
 use btc_relay::structs::{BlockHeader, CommittedBlockHeader};
@@ -62,10 +57,10 @@ fn relay_blocks_from_full_node() {
 
     let yona_client = get_yona_client();
 
-    let last_block_hash = bitcoind_client.get_best_block_hash().unwrap();
-    println!("{last_block_hash:?}");
+    let tip = bitcoind_client.get_chain_tips().unwrap().remove(0);
+    println!("{tip:?}");
 
-    let last_block = bitcoind_client.get_block(&last_block_hash).unwrap();
+    let last_block = bitcoind_client.get_block(&tip.hash).unwrap();
     println!("{last_block:?}");
 
     let yona_block_header = BlockHeader {
@@ -90,6 +85,16 @@ fn relay_blocks_from_full_node() {
         &relay_program,
     );
 
+    if env::var("INIT_PROGRAM").is_ok() {
+        init_program(
+            &program,
+            main_state,
+            header_account,
+            yona_block_header,
+            tip.height as u32,
+        );
+    }
+
     let header_account = AccountMeta::new(header_account, false);
 
     let res = program
@@ -108,13 +113,41 @@ fn relay_blocks_from_full_node() {
     println!("Submit block headers tx {res}");
 }
 
+fn init_program(
+    program: &Program<Rc<Keypair>>,
+    main_state: Pubkey,
+    header_topic: Pubkey,
+    latest_header: BlockHeader,
+    block_height: u32,
+) {
+    let res = program
+        .request()
+        .accounts(Initialize {
+            signer: program.payer(),
+            main_state,
+            header_topic,
+            system_program: anchor_client::solana_sdk::system_program::ID,
+        })
+        .args(InitializeInstruction {
+            data: latest_header,
+            block_height,
+            chain_work: [0; 32],
+            last_diff_adjustment: latest_header.timestamp,
+            prev_block_timestamps: [latest_header.timestamp; 10],
+        })
+        .send()
+        .unwrap();
+
+    println!("{}", res);
+}
+
 fn get_yona_client() -> AnchorClient<Rc<Keypair>> {
     // Connect to the Yona devnet
     let rpc_url = "http://devnet-rpc.yona.network:8899".to_string();
     let ws_url = "ws://devnet-rpc.yona.network:8900".to_string();
 
     let mut keypair_path = env::home_dir().unwrap();
-    keypair_path.push(".config/solana/my.json");
+    keypair_path.push(".config/solana/id.json");
     // Set up sender and recipient keypairs
     let sender = read_keypair_file(keypair_path).unwrap();
 

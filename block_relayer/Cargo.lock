@@ -805,8 +805,6 @@ dependencies = [
  "bitcoincore-rpc",
  "btc-relay",
  "electrum-client",
- "solana-client",
- "solana-sdk",
 ]
 
 [[package]]

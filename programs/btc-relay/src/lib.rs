@@ -15,7 +15,7 @@ mod state;
 pub mod structs;
 mod utils;
 
-declare_id!("5eYiNZmKvAiJLERXyf9YhkEUjiriWsNM5cLwF6xupmyT");
+declare_id!("HY7CpkPjh5FgcU22RmEpqD6T5ZNWSgmwiTDYE5yHRfmf");
 
 #[program]
 pub mod btc_relay {
