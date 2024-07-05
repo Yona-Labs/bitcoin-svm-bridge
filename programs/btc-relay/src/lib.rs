@@ -9,7 +9,7 @@ use structs::*;
 
 mod arrayutils;
 mod errors;
-mod events;
+pub mod events;
 mod instructions;
 mod state;
 pub mod structs;

@@ -1,17 +1,27 @@
-use std::env;
 use std::rc::Rc;
+use std::str::FromStr;
+use std::time::Duration;
+use std::{env, thread};
 
 use anchor_client::anchor_lang::prelude::AccountMeta;
-use anchor_client::anchor_lang::Id;
+use anchor_client::anchor_lang::{AnchorDeserialize, Id};
+use anchor_client::anchor_lang::{Discriminator, Event};
 use anchor_client::solana_sdk::signature::{read_keypair_file, Keypair};
 use anchor_client::solana_sdk::{
-    commitment_config::CommitmentConfig, pubkey::Pubkey, signature::Signer,
+    commitment_config::CommitmentConfig,
+    pubkey::Pubkey,
+    signature::{Signature, Signer},
 };
 use anchor_client::{Client as AnchorClient, Cluster, Program};
+use base64::prelude::*;
+use bitcoincore_rpc::bitcoin::blockdata::block::Block;
 use bitcoincore_rpc::bitcoin::hashes::Hash as BitcoinRpcHash;
+use bitcoincore_rpc::bitcoin::hex::DisplayHex;
 use bitcoincore_rpc::{Auth, Client as BitcoinRpcClient, RpcApi};
+use solana_transaction_status::UiTransactionEncoding;
 
 use btc_relay::accounts::{Initialize, SubmitBlockHeaders, VerifyTransaction};
+use btc_relay::events::StoreHeader;
 use btc_relay::instruction::{
     Initialize as InitializeInstruction, SubmitBlockHeaders as SubmitBlockHeadersInstruction,
     VerifySmallTx as VerifySmallTxInstruction,
@@ -19,34 +29,8 @@ use btc_relay::instruction::{
 use btc_relay::program::BtcRelay;
 use btc_relay::structs::{BlockHeader, CommittedBlockHeader};
 
-const FIRST_HEADER: BlockHeader = BlockHeader {
-    version: 541065220,
-    reversed_prev_blockhash: [
-        139, 67, 181, 184, 213, 211, 105, 125, 12, 246, 47, 248, 73, 161, 241, 44, 181, 146, 16,
-        138, 254, 221, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    ],
-    merkle_root: [
-        249, 15, 28, 171, 45, 98, 137, 134, 153, 170, 220, 149, 126, 248, 16, 219, 250, 39, 227,
-        139, 56, 10, 175, 63, 31, 24, 40, 28, 243, 155, 125, 33,
-    ],
-    timestamp: 1671837609,
-    nbits: 386397584,
-    nonce: 3268247420,
-};
-
-const COMMITED_HEADER: CommittedBlockHeader = CommittedBlockHeader {
-    chain_work: [
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 60, 39, 152, 233, 4, 108, 127,
-        40, 200, 233, 11, 98,
-    ],
-    header: FIRST_HEADER,
-    last_diff_adjustment: 1671463076,
-    blockheight: 768686,
-    prev_block_timestamps: [
-        1671463076, 1671463076, 1671463076, 1671463076, 1671463076, 1671463076, 1671463076,
-        1671463076, 1671463076, 1671463076,
-    ],
-};
+const START_SUBMIT_FROM_TX: &str =
+    "3DZqTDAbL88gNNAVzDhfVHTfXRWRU3DBBwsPdYs6ZCrefw4whJYkxmSskzoynMiLikyjq1oYc6SuQRWdSpZ3g1ep";
 
 fn relay_blocks_from_full_node() {
     let bitcoind_client = BitcoinRpcClient::new(
@@ -63,63 +47,85 @@ fn relay_blocks_from_full_node() {
     let last_block = bitcoind_client.get_block(&tip.hash).unwrap();
     println!("{last_block:?}");
 
-    let yona_block_header = BlockHeader {
-        version: last_block.header.version.to_consensus() as u32,
-        reversed_prev_blockhash: last_block.header.prev_blockhash.to_byte_array(),
-        merkle_root: last_block.header.merkle_root.to_byte_array(),
-        timestamp: last_block.header.time,
-        nbits: last_block.header.bits.to_consensus(),
-        nonce: last_block.header.nonce,
-    };
-
     let relay_program = BtcRelay::id();
     let program = yona_client.program(relay_program).unwrap();
 
     let (main_state, _) = Pubkey::find_program_address(&[b"state"], &relay_program);
 
-    let (header_account, _) = Pubkey::find_program_address(
-        &[
-            b"header",
-            yona_block_header.get_block_hash().unwrap().as_slice(),
-        ],
-        &relay_program,
-    );
-
     if env::var("INIT_PROGRAM").is_ok() {
-        init_program(
-            &program,
-            main_state,
-            header_account,
-            yona_block_header,
-            tip.height as u32,
-        );
+        init_program(&program, main_state, last_block, tip.height as u32);
     }
 
-    let header_account = AccountMeta::new(header_account, false);
+    let mut last_submit_tx = Signature::from_str(START_SUBMIT_FROM_TX).unwrap();
+    loop {
+        if env::var("SUBMIT").is_ok() {
+            /*
+            let latest_yona_block_hash = program.rpc().get_latest_blockhash().unwrap();
 
-    let res = program
-        .request()
-        .accounts(SubmitBlockHeaders {
-            signer: program.payer(),
-            main_state,
-        })
-        .accounts(vec![header_account])
-        .args(SubmitBlockHeadersInstruction {
-            data: vec![yona_block_header],
-            commited_header: COMMITED_HEADER,
-        })
-        .send()
-        .unwrap();
-    println!("Submit block headers tx {res}");
+            let status = program.rpc().get_signature_status_with_commitment(
+                &last_submit_tx,
+                CommitmentConfig::processed(),
+            );
+            println!("{status:?}");
+
+            program
+                .rpc()
+                .confirm_transaction_with_spinner(
+                    &last_submit_tx,
+                    &latest_yona_block_hash,
+                    CommitmentConfig::confirmed(),
+                )
+                .unwrap();
+             */
+
+            let last_submit_tx_data = program
+                .rpc()
+                .get_transaction(&last_submit_tx, UiTransactionEncoding::Binary)
+                .unwrap()
+                .transaction
+                .meta
+                .unwrap();
+
+            let messages: Option<Vec<String>> = last_submit_tx_data.log_messages.into();
+            let parsed_base64 = BASE64_STANDARD
+                .decode(messages.unwrap()[2].strip_prefix("Program data: ").unwrap())
+                .unwrap();
+            let stored_header = StoreHeader::try_from_slice(&parsed_base64[8..]).unwrap();
+
+            let last_submitted_height = stored_header.header.blockheight;
+            let new_height = last_submitted_height + 1;
+
+            let block_hash_to_submit = bitcoind_client.get_block_hash(new_height as u64).unwrap();
+            let block_to_submit = bitcoind_client.get_block(&block_hash_to_submit).unwrap();
+
+            last_submit_tx =
+                submit_block(&program, main_state, block_to_submit, stored_header.header);
+
+            thread::sleep(Duration::from_secs(20));
+        }
+    }
 }
 
 fn init_program(
     program: &Program<Rc<Keypair>>,
     main_state: Pubkey,
-    header_topic: Pubkey,
-    latest_header: BlockHeader,
+    block: Block,
     block_height: u32,
 ) {
+    let yona_block_header = BlockHeader {
+        version: block.header.version.to_consensus() as u32,
+        reversed_prev_blockhash: block.header.prev_blockhash.to_byte_array(),
+        merkle_root: block.header.merkle_root.to_byte_array(),
+        timestamp: block.header.time,
+        nbits: block.header.bits.to_consensus(),
+        nonce: block.header.nonce,
+    };
+
+    let block_hash = yona_block_header.get_block_hash().unwrap();
+
+    let (header_topic, _) =
+        Pubkey::find_program_address(&[b"header", block_hash.as_slice()], &program.id());
+
     let res = program
         .request()
         .accounts(Initialize {
@@ -129,16 +135,19 @@ fn init_program(
             system_program: anchor_client::solana_sdk::system_program::ID,
         })
         .args(InitializeInstruction {
-            data: latest_header,
+            data: yona_block_header,
             block_height,
             chain_work: [0; 32],
-            last_diff_adjustment: latest_header.timestamp,
-            prev_block_timestamps: [latest_header.timestamp; 10],
+            last_diff_adjustment: yona_block_header.timestamp,
+            prev_block_timestamps: [yona_block_header.timestamp; 10],
         })
         .send()
         .unwrap();
 
-    println!("{}", res);
+    println!(
+        "Submitted block {}, tx sig {res}",
+        block_hash.to_lower_hex_string()
+    );
 }
 
 fn get_yona_client() -> AnchorClient<Rc<Keypair>> {
@@ -154,6 +163,50 @@ fn get_yona_client() -> AnchorClient<Rc<Keypair>> {
     let signer = Rc::new(sender);
     let cluster = Cluster::Custom(rpc_url, ws_url);
     AnchorClient::new_with_options(cluster, signer, CommitmentConfig::confirmed())
+}
+
+fn submit_block(
+    program: &Program<Rc<Keypair>>,
+    main_state: Pubkey,
+    block: Block,
+    commited_header: CommittedBlockHeader,
+) -> Signature {
+    let yona_block_header = BlockHeader {
+        version: block.header.version.to_consensus() as u32,
+        reversed_prev_blockhash: block.header.prev_blockhash.to_byte_array(),
+        merkle_root: block.header.merkle_root.to_byte_array(),
+        timestamp: block.header.time,
+        nbits: block.header.bits.to_consensus(),
+        nonce: block.header.nonce,
+    };
+
+    let mut block_hash = yona_block_header.get_block_hash().unwrap();
+    let (header_topic, _) =
+        Pubkey::find_program_address(&[b"header", block_hash.as_slice()], &program.id());
+
+    let header_account = AccountMeta::new(header_topic, false);
+
+    let res = program
+        .request()
+        .accounts(SubmitBlockHeaders {
+            signer: program.payer(),
+            main_state,
+        })
+        .accounts(vec![header_account])
+        .args(SubmitBlockHeadersInstruction {
+            data: vec![yona_block_header],
+            commited_header,
+        })
+        .send()
+        .unwrap();
+
+    block_hash.reverse();
+    println!(
+        "Submitted block header {} tx {res}",
+        block_hash.to_lower_hex_string()
+    );
+
+    res
 }
 
 fn main() {
