@@ -18,6 +18,7 @@ use bitcoincore_rpc::bitcoin::blockdata::block::Block;
 use bitcoincore_rpc::bitcoin::hashes::Hash as BitcoinRpcHash;
 use bitcoincore_rpc::bitcoin::hex::DisplayHex;
 use bitcoincore_rpc::{Auth, Client as BitcoinRpcClient, RpcApi};
+use log::{debug, info};
 use solana_transaction_status::UiTransactionEncoding;
 
 use btc_relay::accounts::{Initialize, SubmitBlockHeaders, VerifyTransaction};
@@ -30,7 +31,7 @@ use btc_relay::program::BtcRelay;
 use btc_relay::structs::{BlockHeader, CommittedBlockHeader};
 
 const START_SUBMIT_FROM_TX: &str =
-    "3DZqTDAbL88gNNAVzDhfVHTfXRWRU3DBBwsPdYs6ZCrefw4whJYkxmSskzoynMiLikyjq1oYc6SuQRWdSpZ3g1ep";
+    "HGmcAboCdFVvPqqebE8KRR288bmooHEed9KMtkEe2cy4fKuySHqQ5nz2LAkwWVH65miUJ7HdvgRFvaADGmW3fdZ";
 
 fn relay_blocks_from_full_node() {
     let bitcoind_client = BitcoinRpcClient::new(
@@ -42,10 +43,10 @@ fn relay_blocks_from_full_node() {
     let yona_client = get_yona_client();
 
     let tip = bitcoind_client.get_chain_tips().unwrap().remove(0);
-    println!("{tip:?}");
+    debug!("Current bitcoin tip {tip:?}");
 
     let last_block = bitcoind_client.get_block(&tip.hash).unwrap();
-    println!("{last_block:?}");
+    debug!("Bitcoin last block {last_block:?}");
 
     let relay_program = BtcRelay::id();
     let program = yona_client.program(relay_program).unwrap();
@@ -59,24 +60,21 @@ fn relay_blocks_from_full_node() {
     let mut last_submit_tx = Signature::from_str(START_SUBMIT_FROM_TX).unwrap();
     loop {
         if env::var("SUBMIT").is_ok() {
-            /*
-            let latest_yona_block_hash = program.rpc().get_latest_blockhash().unwrap();
-
-            let status = program.rpc().get_signature_status_with_commitment(
-                &last_submit_tx,
-                CommitmentConfig::processed(),
-            );
-            println!("{status:?}");
-
-            program
-                .rpc()
-                .confirm_transaction_with_spinner(
-                    &last_submit_tx,
-                    &latest_yona_block_hash,
-                    CommitmentConfig::confirmed(),
-                )
-                .unwrap();
-             */
+            loop {
+                // Notes on using get_signature_status_with_commitment_and_history instead of
+                // get_signature_status_with_commitment https://solana.stackexchange.com/a/326
+                if let Ok(Some(Ok(_))) = program
+                    .rpc()
+                    .get_signature_status_with_commitment_and_history(
+                        &last_submit_tx,
+                        CommitmentConfig::finalized(),
+                        true,
+                    )
+                {
+                    break;
+                }
+                thread::sleep(Duration::from_secs(1));
+            }
 
             let last_submit_tx_data = program
                 .rpc()
@@ -100,8 +98,6 @@ fn relay_blocks_from_full_node() {
 
             last_submit_tx =
                 submit_block(&program, main_state, block_to_submit, stored_header.header);
-
-            thread::sleep(Duration::from_secs(20));
         }
     }
 }
@@ -144,7 +140,7 @@ fn init_program(
         .send()
         .unwrap();
 
-    println!(
+    info!(
         "Submitted block {}, tx sig {res}",
         block_hash.to_lower_hex_string()
     );
@@ -201,7 +197,7 @@ fn submit_block(
         .unwrap();
 
     block_hash.reverse();
-    println!(
+    info!(
         "Submitted block header {} tx {res}",
         block_hash.to_lower_hex_string()
     );
@@ -210,6 +206,7 @@ fn submit_block(
 }
 
 fn main() {
+    env_logger::init();
     relay_blocks_from_full_node();
     /*
     let electrum_client = ElectrumClient::new("tcp://electrum.blockstream.info:50001").unwrap();
@@ -484,6 +481,5 @@ fn main() {
         .unwrap();
 
     println!("{res}");
-
-     */
+    */
 }
