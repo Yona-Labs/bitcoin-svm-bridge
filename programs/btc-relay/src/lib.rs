@@ -11,7 +11,7 @@ mod arrayutils;
 mod errors;
 pub mod events;
 mod instructions;
-mod state;
+pub mod state;
 pub mod structs;
 mod utils;
 

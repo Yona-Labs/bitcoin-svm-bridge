@@ -3,9 +3,7 @@ use std::str::FromStr;
 use std::time::Duration;
 use std::{env, thread};
 
-use anchor_client::anchor_lang::prelude::AccountMeta;
-use anchor_client::anchor_lang::{AnchorDeserialize, Id};
-use anchor_client::anchor_lang::{Discriminator, Event};
+use anchor_client::anchor_lang::prelude::*;
 use anchor_client::solana_sdk::signature::{read_keypair_file, Keypair};
 use anchor_client::solana_sdk::{
     commitment_config::CommitmentConfig,
@@ -13,12 +11,14 @@ use anchor_client::solana_sdk::{
     signature::{Signature, Signer},
 };
 use anchor_client::{Client as AnchorClient, Cluster, Program};
+use anchor_client::anchor_lang::solana_program::example_mocks::solana_address_lookup_table_program::state;
 use base64::prelude::*;
+use bitcoin::hex::DisplayHex;
 use bitcoincore_rpc::bitcoin::blockdata::block::Block;
 use bitcoincore_rpc::bitcoin::hashes::Hash as BitcoinRpcHash;
-use bitcoincore_rpc::bitcoin::hex::DisplayHex;
 use bitcoincore_rpc::{Auth, Client as BitcoinRpcClient, RpcApi};
-use log::{debug, info};
+use bitcoincore_rpc::bitcoin::BlockHash;
+use log::{debug, info, error};
 use solana_transaction_status::UiTransactionEncoding;
 
 use btc_relay::accounts::{Initialize, SubmitBlockHeaders, VerifyTransaction};
@@ -28,6 +28,7 @@ use btc_relay::instruction::{
     VerifySmallTx as VerifySmallTxInstruction,
 };
 use btc_relay::program::BtcRelay;
+use btc_relay::state::MainState;
 use btc_relay::structs::{BlockHeader, CommittedBlockHeader};
 
 const START_SUBMIT_FROM_TX: &str =
@@ -58,37 +59,90 @@ fn relay_blocks_from_full_node() {
     }
 
     let mut last_submit_tx = Signature::from_str(START_SUBMIT_FROM_TX).unwrap();
-    loop {
-        if env::var("SUBMIT").is_ok() {
-            loop {
-                // Notes on using get_signature_status_with_commitment_and_history instead of
-                // get_signature_status_with_commitment https://solana.stackexchange.com/a/326
-                if let Ok(Some(Ok(_))) = program
-                    .rpc()
-                    .get_signature_status_with_commitment_and_history(
-                        &last_submit_tx,
-                        CommitmentConfig::finalized(),
-                        true,
-                    )
-                {
-                    break;
-                }
-                thread::sleep(Duration::from_secs(1));
+    if env::var("SUBMIT").is_ok() {
+        loop {
+            // Notes on using get_signature_status_with_commitment_and_history instead of
+            // get_signature_status_with_commitment https://solana.stackexchange.com/a/326
+            if let Ok(Some(Ok(_))) = program
+                .rpc()
+                .get_signature_status_with_commitment_and_history(
+                    &last_submit_tx,
+                    CommitmentConfig::finalized(),
+                    true,
+                )
+            {
+                break;
             }
 
-            let last_submit_tx_data = program
+            let stored_header = match program
                 .rpc()
                 .get_transaction(&last_submit_tx, UiTransactionEncoding::Binary)
-                .unwrap()
-                .transaction
-                .meta
-                .unwrap();
+            {
+                Ok(tx) => {
+                    let messages: Option<Vec<String>> =
+                        tx.transaction.meta.unwrap().log_messages.into();
+                    let parsed_base64 = BASE64_STANDARD
+                        .decode(messages.unwrap()[2].strip_prefix("Program data: ").unwrap())
+                        .unwrap();
+                    StoreHeader::try_from_slice(&parsed_base64[8..]).unwrap()
+                }
+                Err(e) => {
+                    error!("Got error {e} on get_transaction({last_submit_tx})");
+                    let raw_account = program.rpc().get_account(&main_state).unwrap();
+                    info!("Data len {}", raw_account.data.len());
+                    info!("Main state space {}", MainState::space());
+                    info!("Main state size {}", std::mem::size_of::<MainState>());
 
-            let messages: Option<Vec<String>> = last_submit_tx_data.log_messages.into();
-            let parsed_base64 = BASE64_STANDARD
-                .decode(messages.unwrap()[2].strip_prefix("Program data: ").unwrap())
-                .unwrap();
-            let stored_header = StoreHeader::try_from_slice(&parsed_base64[8..]).unwrap();
+                    let main_state_data =
+                        MainState::try_deserialize_unchecked(&mut &raw_account.data[..8128])
+                            .unwrap();
+                    info!("Last stored block height {}", main_state_data.block_height);
+
+                    let mut block_hash = main_state_data.tip_block_hash;
+                    let bitcoin_block = bitcoind_client
+                        .get_block(&BlockHash::from_byte_array(block_hash))
+                        .unwrap();
+                    info!("Got block {bitcoin_block:?}");
+
+                    block_hash.reverse();
+                    info!(
+                        "Last stored block hash {}",
+                        block_hash.to_lower_hex_string()
+                    );
+
+                    let mut prev_block_timestamps = [0; 10];
+                    for i in 0..10 {
+                        let prev_block_hash = bitcoind_client
+                            .get_block_hash(main_state_data.block_height as u64 - i as u64 - 1)
+                            .unwrap();
+                        let block = bitcoind_client.get_block(&prev_block_hash).unwrap();
+                        prev_block_timestamps[9 - i] = block.header.time;
+                    }
+
+                    let last_commited_block = CommittedBlockHeader {
+                        chain_work: [0; 32],
+                        header: BlockHeader {
+                            version: bitcoin_block.header.version.to_consensus() as u32,
+                            reversed_prev_blockhash: bitcoin_block
+                                .header
+                                .prev_blockhash
+                                .to_byte_array(),
+                            merkle_root: bitcoin_block.header.merkle_root.to_byte_array(),
+                            timestamp: bitcoin_block.header.time,
+                            nbits: bitcoin_block.header.bits.to_consensus(),
+                            nonce: bitcoin_block.header.nonce,
+                        },
+                        last_diff_adjustment: main_state_data.last_diff_adjustment,
+                        blockheight: main_state_data.block_height,
+                        prev_block_timestamps,
+                    };
+                    StoreHeader {
+                        block_hash,
+                        commit_hash: main_state_data.tip_commit_hash,
+                        header: last_commited_block,
+                    }
+                }
+            };
 
             let last_submitted_height = stored_header.header.blockheight;
             let new_height = last_submitted_height + 1;
