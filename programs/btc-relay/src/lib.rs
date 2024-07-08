@@ -13,7 +13,7 @@ pub mod events;
 mod instructions;
 pub mod state;
 pub mod structs;
-mod utils;
+pub mod utils;
 
 declare_id!("HY7CpkPjh5FgcU22RmEpqD6T5ZNWSgmwiTDYE5yHRfmf");
 

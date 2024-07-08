@@ -1,4 +1,5 @@
 use anchor_lang::{prelude::*, solana_program::clock, solana_program::hash};
+use bitcoin::script::Builder;
 
 // Utilities for block header verification
 use crate::arrayutils;
@@ -323,3 +324,5 @@ pub fn compute_merkle(
 
     current_hash
 }
+
+pub fn bridge_deposit_script(solana_pub: [u8; 32], bitcoin_pubkey_hash: [u8; 20]) {}

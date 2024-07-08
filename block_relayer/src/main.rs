@@ -13,7 +13,11 @@ use anchor_client::solana_sdk::{
 use anchor_client::{Client as AnchorClient, Cluster, Program};
 use anchor_client::anchor_lang::solana_program::example_mocks::solana_address_lookup_table_program::state;
 use base64::prelude::*;
+use bitcoin::address::Payload;
+use bitcoin::blockdata::opcodes::all::*;
+use bitcoin::script::Builder;
 use bitcoin::hex::DisplayHex;
+use bitcoin::{Address, Network, PublicKey};
 use bitcoincore_rpc::bitcoin::blockdata::block::Block;
 use bitcoincore_rpc::bitcoin::hashes::Hash as BitcoinRpcHash;
 use bitcoincore_rpc::{Auth, Client as BitcoinRpcClient, RpcApi};
@@ -34,7 +38,32 @@ use btc_relay::structs::{BlockHeader, CommittedBlockHeader};
 const START_SUBMIT_FROM_TX: &str =
     "HGmcAboCdFVvPqqebE8KRR288bmooHEed9KMtkEe2cy4fKuySHqQ5nz2LAkwWVH65miUJ7HdvgRFvaADGmW3fdZ";
 
+const SOLANA_DEPOSIT_PUBKEY: &str = "5Xy6zEA64yENXm9Zz5xDmTdB8t9cQpNaD3ZwNLBeiSc5";
+
+const BITCOIN_DEPOSIT_PUBKEY: &str =
+    "0288e64b7fd0bcdaf5c0081d068f6a6f7b6ea0036ebabf3daabc74c2c7e1191e2d";
+
+const FIRST_BRIDGE_TX_ID: &str = "a17e0a4375868aef5bbd602be151889f23c292ee03039aa353b61ca8c717458e";
+
 fn relay_blocks_from_full_node() {
+    let bitcoin_pubkey = PublicKey::from_str(BITCOIN_DEPOSIT_PUBKEY).unwrap();
+
+    let solana_address = Pubkey::from_str(SOLANA_DEPOSIT_PUBKEY).unwrap();
+    let script = Builder::new()
+        .push_slice(solana_address.to_bytes())
+        .push_opcode(OP_DROP)
+        .push_opcode(OP_HASH160)
+        .push_slice(bitcoin_pubkey.pubkey_hash())
+        .push_opcode(OP_EQUALVERIFY)
+        .push_opcode(OP_CHECKSIG);
+    info!("{script:?}");
+
+    let address = Address::p2wpkh(&bitcoin_pubkey, Network::Regtest).unwrap();
+    println!("{address}");
+
+    let deposit_address = Address::p2wsh(script.as_script(), Network::Regtest);
+    println!("Deposit address {deposit_address}");
+
     let bitcoind_client = BitcoinRpcClient::new(
         "http://localhost:19001",
         Auth::UserPass("test".into(), "test".into()),
@@ -59,7 +88,7 @@ fn relay_blocks_from_full_node() {
     }
 
     let mut last_submit_tx = Signature::from_str(START_SUBMIT_FROM_TX).unwrap();
-    if env::var("SUBMIT").is_ok() {
+    if env::var("RELAY_BLOCKS").is_ok() {
         loop {
             // Notes on using get_signature_status_with_commitment_and_history instead of
             // get_signature_status_with_commitment https://solana.stackexchange.com/a/326
@@ -96,18 +125,24 @@ fn relay_blocks_from_full_node() {
                     let main_state_data =
                         MainState::try_deserialize_unchecked(&mut &raw_account.data[..8128])
                             .unwrap();
-                    info!("Last stored block height {}", main_state_data.block_height);
+
+                    let max_block = 3659 + 100;
+                    if main_state_data.block_height >= max_block {
+                        info!("Not relaying blocks over {max_block} temporary");
+                        break;
+                    }
 
                     let mut block_hash = main_state_data.tip_block_hash;
                     let bitcoin_block = bitcoind_client
                         .get_block(&BlockHash::from_byte_array(block_hash))
                         .unwrap();
-                    info!("Got block {bitcoin_block:?}");
+                    debug!("Got block {bitcoin_block:?}");
 
                     block_hash.reverse();
                     info!(
-                        "Last stored block hash {}",
-                        block_hash.to_lower_hex_string()
+                        "Last stored block hash {} and height {}",
+                        block_hash.to_lower_hex_string(),
+                        main_state_data.block_height
                     );
 
                     let mut prev_block_timestamps = [0; 10];
