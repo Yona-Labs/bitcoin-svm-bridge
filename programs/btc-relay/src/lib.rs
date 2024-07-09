@@ -20,6 +20,12 @@ declare_id!("HY7CpkPjh5FgcU22RmEpqD6T5ZNWSgmwiTDYE5yHRfmf");
 #[program]
 pub mod btc_relay {
     use super::*;
+    use crate::utils::{bridge_deposit_script, BITCOIN_DEPOSIT_PUBKEY};
+    use bitcoin::address::Address;
+    use bitcoin::hashes::hash160::Hash as Hash160;
+    use bitcoin::hashes::Hash;
+    use bitcoin::hex::FromHex;
+    use bitcoin::Network;
 
     // Initializes the program with the initial block header,
     // this can be any past block header with high enough confirmations to be sure it doesn't get re-orged.
@@ -406,6 +412,25 @@ pub mod btc_relay {
             );
 
             let bitcoin_tx = Transaction::consensus_decode(&mut tx_bytes.as_slice()).unwrap();
+
+            let bridge_pubkey: [u8; 33] = FromHex::from_hex(BITCOIN_DEPOSIT_PUBKEY).unwrap();
+            let pubkey_hash = Hash160::hash(&bridge_pubkey);
+            let expected_script = bridge_deposit_script(
+                ctx.accounts.mint_receiver.key.to_bytes(),
+                pubkey_hash.to_byte_array(),
+            );
+
+            let expected_address = Address::p2wsh(expected_script.as_script(), Network::Regtest);
+            let actual_address = Address::from_script(
+                bitcoin_tx.output[0].script_pubkey.as_script(),
+                Network::Regtest,
+            )
+            .unwrap();
+
+            require!(
+                actual_address == expected_address,
+                RelayErrorCode::InvalidDepositAddress
+            );
 
             let computed_merkle = utils::compute_merkle(
                 bitcoin_tx.compute_txid().as_ref(),

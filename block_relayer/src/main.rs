@@ -1,3 +1,5 @@
+mod merkle;
+
 use std::rc::Rc;
 use std::str::FromStr;
 use std::time::Duration;
@@ -12,36 +14,34 @@ use anchor_client::solana_sdk::{
 };
 use anchor_client::{Client as AnchorClient, Cluster, Program};
 use anchor_client::anchor_lang::solana_program::example_mocks::solana_address_lookup_table_program::state;
+use anchor_client::solana_sdk::native_token::LAMPORTS_PER_SOL;
 use base64::prelude::*;
-use bitcoin::address::Payload;
-use bitcoin::blockdata::opcodes::all::*;
-use bitcoin::script::Builder;
 use bitcoin::hex::DisplayHex;
-use bitcoin::{Address, Network, PublicKey};
+use bitcoin::{Address, Network, PublicKey, Txid};
+use bitcoin::hashes::Hash;
 use bitcoincore_rpc::bitcoin::blockdata::block::Block;
 use bitcoincore_rpc::bitcoin::hashes::Hash as BitcoinRpcHash;
 use bitcoincore_rpc::{Auth, Client as BitcoinRpcClient, RpcApi};
 use bitcoincore_rpc::bitcoin::BlockHash;
-use log::{debug, info, error};
+use log::{debug, info, error, warn};
 use solana_transaction_status::UiTransactionEncoding;
 
-use btc_relay::accounts::{Initialize, SubmitBlockHeaders, VerifyTransaction};
+use crate::merkle::Proof;
+use btc_relay::accounts::{Deposit, Initialize, SubmitBlockHeaders, VerifyTransaction};
 use btc_relay::events::StoreHeader;
 use btc_relay::instruction::{
-    Initialize as InitializeInstruction, SubmitBlockHeaders as SubmitBlockHeadersInstruction,
-    VerifySmallTx as VerifySmallTxInstruction,
+    Deposit as DepositInstruction, Initialize as InitializeInstruction,
+    SubmitBlockHeaders as SubmitBlockHeadersInstruction, VerifySmallTx as VerifySmallTxInstruction,
 };
 use btc_relay::program::BtcRelay;
 use btc_relay::state::MainState;
 use btc_relay::structs::{BlockHeader, CommittedBlockHeader};
+use btc_relay::utils::{bridge_deposit_script, BITCOIN_DEPOSIT_PUBKEY};
 
 const START_SUBMIT_FROM_TX: &str =
     "HGmcAboCdFVvPqqebE8KRR288bmooHEed9KMtkEe2cy4fKuySHqQ5nz2LAkwWVH65miUJ7HdvgRFvaADGmW3fdZ";
 
 const SOLANA_DEPOSIT_PUBKEY: &str = "5Xy6zEA64yENXm9Zz5xDmTdB8t9cQpNaD3ZwNLBeiSc5";
-
-const BITCOIN_DEPOSIT_PUBKEY: &str =
-    "0288e64b7fd0bcdaf5c0081d068f6a6f7b6ea0036ebabf3daabc74c2c7e1191e2d";
 
 const FIRST_BRIDGE_TX_ID: &str = "a17e0a4375868aef5bbd602be151889f23c292ee03039aa353b61ca8c717458e";
 
@@ -49,17 +49,13 @@ fn relay_blocks_from_full_node() {
     let bitcoin_pubkey = PublicKey::from_str(BITCOIN_DEPOSIT_PUBKEY).unwrap();
 
     let solana_address = Pubkey::from_str(SOLANA_DEPOSIT_PUBKEY).unwrap();
-    let script = Builder::new()
-        .push_slice(solana_address.to_bytes())
-        .push_opcode(OP_DROP)
-        .push_opcode(OP_HASH160)
-        .push_slice(bitcoin_pubkey.pubkey_hash())
-        .push_opcode(OP_EQUALVERIFY)
-        .push_opcode(OP_CHECKSIG);
-    info!("{script:?}");
 
-    let address = Address::p2wpkh(&bitcoin_pubkey, Network::Regtest).unwrap();
-    println!("{address}");
+    let script = bridge_deposit_script(
+        solana_address.to_bytes(),
+        bitcoin_pubkey.pubkey_hash().to_byte_array(),
+    );
+
+    info!("{script:?}");
 
     let deposit_address = Address::p2wsh(script.as_script(), Network::Regtest);
     println!("Deposit address {deposit_address}");
@@ -133,11 +129,12 @@ fn relay_blocks_from_full_node() {
                     }
 
                     let mut block_hash = main_state_data.tip_block_hash;
-                    let bitcoin_block = bitcoind_client
-                        .get_block(&BlockHash::from_byte_array(block_hash))
-                        .unwrap();
-                    debug!("Got block {bitcoin_block:?}");
-
+                    let commited_header = reconstruct_commited_header(
+                        &bitcoind_client,
+                        &BlockHash::from_byte_array(block_hash),
+                        main_state_data.block_height,
+                        main_state_data.last_diff_adjustment,
+                    );
                     block_hash.reverse();
                     info!(
                         "Last stored block hash {} and height {}",
@@ -145,36 +142,10 @@ fn relay_blocks_from_full_node() {
                         main_state_data.block_height
                     );
 
-                    let mut prev_block_timestamps = [0; 10];
-                    for i in 0..10 {
-                        let prev_block_hash = bitcoind_client
-                            .get_block_hash(main_state_data.block_height as u64 - i as u64 - 1)
-                            .unwrap();
-                        let block = bitcoind_client.get_block(&prev_block_hash).unwrap();
-                        prev_block_timestamps[9 - i] = block.header.time;
-                    }
-
-                    let last_commited_block = CommittedBlockHeader {
-                        chain_work: [0; 32],
-                        header: BlockHeader {
-                            version: bitcoin_block.header.version.to_consensus() as u32,
-                            reversed_prev_blockhash: bitcoin_block
-                                .header
-                                .prev_blockhash
-                                .to_byte_array(),
-                            merkle_root: bitcoin_block.header.merkle_root.to_byte_array(),
-                            timestamp: bitcoin_block.header.time,
-                            nbits: bitcoin_block.header.bits.to_consensus(),
-                            nonce: bitcoin_block.header.nonce,
-                        },
-                        last_diff_adjustment: main_state_data.last_diff_adjustment,
-                        blockheight: main_state_data.block_height,
-                        prev_block_timestamps,
-                    };
                     StoreHeader {
                         block_hash,
                         commit_hash: main_state_data.tip_commit_hash,
-                        header: last_commited_block,
+                        header: commited_header,
                     }
                 }
             };
@@ -189,6 +160,46 @@ fn relay_blocks_from_full_node() {
                 submit_block(&program, main_state, block_to_submit, stored_header.header);
         }
     }
+
+    if env::var("INIT_DEPOSIT").is_ok() {
+        init_deposit(&program, 100 * LAMPORTS_PER_SOL);
+    }
+
+    if env::var("RELAY_TX").is_ok() {
+        let raw_account = program.rpc().get_account(&main_state).unwrap();
+        info!("Data len {}", raw_account.data.len());
+        info!("Main state space {}", MainState::space());
+        info!("Main state size {}", std::mem::size_of::<MainState>());
+
+        let main_state_data =
+            MainState::try_deserialize_unchecked(&mut &raw_account.data[..8128]).unwrap();
+
+        let tx_id = Txid::from_str(FIRST_BRIDGE_TX_ID).unwrap();
+        relay_tx(
+            &program,
+            main_state,
+            &bitcoind_client,
+            tx_id,
+            main_state_data.last_diff_adjustment,
+        );
+    }
+}
+
+fn init_deposit(program: &Program<Rc<Keypair>>, amount: u64) {
+    let (deposit_account, _) = Pubkey::find_program_address(&[b"solana_deposit"], &program.id());
+
+    let res = program
+        .request()
+        .accounts(Deposit {
+            user: program.payer(),
+            deposit_account,
+            system_program: anchor_client::solana_sdk::system_program::ID,
+        })
+        .args(DepositInstruction { amount })
+        .send()
+        .unwrap();
+
+    info!("Deposit tx sig {res}");
 }
 
 fn init_program(
@@ -292,6 +303,89 @@ fn submit_block(
     );
 
     res
+}
+
+fn reconstruct_commited_header(
+    bitcoind_client: &BitcoinRpcClient,
+    hash: &BlockHash,
+    height: u32,
+    last_diff_adjustment: u32,
+) -> CommittedBlockHeader {
+    let header = bitcoind_client.get_block_header(hash).unwrap();
+    debug!("Got header {header:?}");
+
+    let mut prev_block_timestamps = [0; 10];
+    for i in 0..10 {
+        let prev_block_hash = bitcoind_client
+            .get_block_hash(height as u64 - i as u64 - 1)
+            .unwrap();
+        let block = bitcoind_client.get_block(&prev_block_hash).unwrap();
+        prev_block_timestamps[9 - i] = block.header.time;
+    }
+
+    CommittedBlockHeader {
+        chain_work: [0; 32],
+        header: BlockHeader {
+            version: header.version.to_consensus() as u32,
+            reversed_prev_blockhash: header.prev_blockhash.to_byte_array(),
+            merkle_root: header.merkle_root.to_byte_array(),
+            timestamp: header.time,
+            nbits: header.bits.to_consensus(),
+            nonce: header.nonce,
+        },
+        last_diff_adjustment,
+        blockheight: height,
+        prev_block_timestamps,
+    }
+}
+
+fn relay_tx(
+    program: &Program<Rc<Keypair>>,
+    main_state: Pubkey,
+    btc_client: &BitcoinRpcClient,
+    tx_id: Txid,
+    last_diff_adjustment: u32,
+) {
+    let transaction = btc_client.get_transaction(&tx_id, None).unwrap();
+    println!("{transaction:?}");
+    let (hash, height) = match (transaction.info.blockhash, transaction.info.blockheight) {
+        (Some(hash), Some(height)) => (hash, height),
+        _ => {
+            warn!("Transaction {tx_id} is not included to block yet");
+            return;
+        }
+    };
+    let commited_header =
+        reconstruct_commited_header(&btc_client, &hash, height, last_diff_adjustment);
+    let block_info = btc_client.get_block_info(&hash).unwrap();
+    let tx_pos = block_info
+        .tx
+        .iter()
+        .position(|in_block| *in_block == tx_id)
+        .unwrap();
+    let proof = Proof::create(&block_info.tx, tx_pos);
+
+    let (deposit_account, _) = Pubkey::find_program_address(&[b"solana_deposit"], &program.id());
+
+    let relay_yona_tx = program
+        .request()
+        .accounts(VerifyTransaction {
+            signer: program.payer(),
+            main_state,
+            deposit_account,
+            mint_receiver: program.payer(),
+        })
+        .args(VerifySmallTxInstruction {
+            tx_bytes: transaction.hex,
+            confirmations: 1,
+            tx_index: tx_pos as u32,
+            commited_header,
+            reversed_merkle_proof: proof.to_reversed_vec(),
+        })
+        .send()
+        .unwrap();
+
+    info!("Relayed {relay_yona_tx}");
 }
 
 fn main() {

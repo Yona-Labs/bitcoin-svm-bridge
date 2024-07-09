@@ -1,10 +1,14 @@
 use anchor_lang::{prelude::*, solana_program::clock, solana_program::hash};
+use bitcoin::blockdata::opcodes::all::*;
 use bitcoin::script::Builder;
 
 // Utilities for block header verification
 use crate::arrayutils;
 use crate::errors::*;
 use crate::structs::*;
+
+pub const BITCOIN_DEPOSIT_PUBKEY: &str =
+    "0288e64b7fd0bcdaf5c0081d068f6a6f7b6ea0036ebabf3daabc74c2c7e1191e2d";
 
 // Returns current timestamp read from Solana's on-chain clock
 pub fn now_ts() -> Result<u32> {
@@ -325,4 +329,12 @@ pub fn compute_merkle(
     current_hash
 }
 
-pub fn bridge_deposit_script(solana_pub: [u8; 32], bitcoin_pubkey_hash: [u8; 20]) {}
+pub fn bridge_deposit_script(solana_pub: [u8; 32], bitcoin_pubkey_hash: [u8; 20]) -> Builder {
+    Builder::new()
+        .push_slice(solana_pub)
+        .push_opcode(OP_DROP)
+        .push_opcode(OP_HASH160)
+        .push_slice(bitcoin_pubkey_hash)
+        .push_opcode(OP_EQUALVERIFY)
+        .push_opcode(OP_CHECKSIG)
+}
