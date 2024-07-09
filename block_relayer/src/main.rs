@@ -122,12 +122,6 @@ fn relay_blocks_from_full_node() {
                         MainState::try_deserialize_unchecked(&mut &raw_account.data[..8128])
                             .unwrap();
 
-                    let max_block = 3659 + 100;
-                    if main_state_data.block_height >= max_block {
-                        info!("Not relaying blocks over {max_block} temporary");
-                        break;
-                    }
-
                     let mut block_hash = main_state_data.tip_block_hash;
                     let commited_header = reconstruct_commited_header(
                         &bitcoind_client,
@@ -372,6 +366,7 @@ fn relay_tx(
             signer: program.payer(),
             main_state,
             deposit_account,
+            // Pubkey::from_str("CgxQmREYVuwyPzHcH19iBQDtPjcHEWuzfRgWrtzepHLs").unwrap()
             mint_receiver: program.payer(),
         })
         .args(VerifySmallTxInstruction {
