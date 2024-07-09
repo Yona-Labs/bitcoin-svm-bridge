@@ -86,19 +86,6 @@ fn relay_blocks_from_full_node() {
     let mut last_submit_tx = Signature::from_str(START_SUBMIT_FROM_TX).unwrap();
     if env::var("RELAY_BLOCKS").is_ok() {
         loop {
-            // Notes on using get_signature_status_with_commitment_and_history instead of
-            // get_signature_status_with_commitment https://solana.stackexchange.com/a/326
-            if let Ok(Some(Ok(_))) = program
-                .rpc()
-                .get_signature_status_with_commitment_and_history(
-                    &last_submit_tx,
-                    CommitmentConfig::finalized(),
-                    true,
-                )
-            {
-                break;
-            }
-
             let stored_header = match program
                 .rpc()
                 .get_transaction(&last_submit_tx, UiTransactionEncoding::Binary)
