@@ -347,7 +347,6 @@ fn relay_tx(
     last_diff_adjustment: u32,
 ) {
     let transaction = btc_client.get_transaction(&tx_id, None).unwrap();
-    println!("{transaction:?}");
     let (hash, height) = match (transaction.info.blockhash, transaction.info.blockheight) {
         (Some(hash), Some(height)) => (hash, height),
         _ => {
@@ -385,7 +384,7 @@ fn relay_tx(
         .send()
         .unwrap();
 
-    info!("Relayed {relay_yona_tx}");
+    info!("Relayed bitcoin tx {} to Yona: {relay_yona_tx}", tx_id);
 }
 
 fn main() {
