@@ -4,6 +4,7 @@ members = [
 ]
 
 exclude = [
+    "btc_faucet",
     "block_relayer"
 ]
 
