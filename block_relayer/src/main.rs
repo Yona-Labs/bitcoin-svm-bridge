@@ -45,8 +45,6 @@ const START_SUBMIT_FROM_TX: &str =
 
 const SOLANA_DEPOSIT_PUBKEY: &str = "5Xy6zEA64yENXm9Zz5xDmTdB8t9cQpNaD3ZwNLBeiSc5";
 
-const FIRST_BRIDGE_TX_ID: &str = "a17e0a4375868aef5bbd602be151889f23c292ee03039aa353b61ca8c717458e";
-
 fn relay_blocks_from_full_node(config: RelayConfig) {
     let bitcoin_pubkey = PublicKey::from_str(BITCOIN_DEPOSIT_PUBKEY).unwrap();
 
@@ -166,15 +164,13 @@ fn relay_blocks_from_full_node(config: RelayConfig) {
     }
 
     if env::var("RELAY_TX").is_ok() {
+        let tx_id = env::var("RELAY_TX").unwrap();
         let raw_account = program.rpc().get_account(&main_state).unwrap();
-        info!("Data len {}", raw_account.data.len());
-        info!("Main state space {}", MainState::space());
-        info!("Main state size {}", std::mem::size_of::<MainState>());
 
         let main_state_data =
             MainState::try_deserialize_unchecked(&mut &raw_account.data[..8128]).unwrap();
 
-        let tx_id = Txid::from_str(FIRST_BRIDGE_TX_ID).unwrap();
+        let tx_id = Txid::from_str(&tx_id).unwrap();
         relay_tx(
             &program,
             main_state,
