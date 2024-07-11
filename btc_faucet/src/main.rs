@@ -25,11 +25,6 @@ async fn request_funds(
 ) -> impl Responder {
     let address = &req.address;
 
-    // Validate Bitcoin address (simplified, you may want to use a proper Bitcoin address validator)
-    if !address.starts_with("m") && !address.starts_with("n") && !address.starts_with("2") {
-        return HttpResponse::BadRequest().body("Invalid Bitcoin regtest address");
-    }
-
     let db = data.db.lock().unwrap();
     let rpc_client = data.rpc_client.lock().unwrap();
 
