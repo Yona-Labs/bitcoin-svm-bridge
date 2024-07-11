@@ -1,3 +1,4 @@
+mod config;
 mod merkle;
 
 use std::rc::Rc;
@@ -26,6 +27,7 @@ use bitcoincore_rpc::bitcoin::BlockHash;
 use log::{debug, info, error, warn};
 use solana_transaction_status::UiTransactionEncoding;
 
+use crate::config::{read_config, RelayConfig};
 use crate::merkle::Proof;
 use btc_relay::accounts::{Deposit, Initialize, SubmitBlockHeaders, VerifyTransaction};
 use btc_relay::events::StoreHeader;
@@ -45,7 +47,7 @@ const SOLANA_DEPOSIT_PUBKEY: &str = "5Xy6zEA64yENXm9Zz5xDmTdB8t9cQpNaD3ZwNLBeiSc
 
 const FIRST_BRIDGE_TX_ID: &str = "a17e0a4375868aef5bbd602be151889f23c292ee03039aa353b61ca8c717458e";
 
-fn relay_blocks_from_full_node() {
+fn relay_blocks_from_full_node(config: RelayConfig) {
     let bitcoin_pubkey = PublicKey::from_str(BITCOIN_DEPOSIT_PUBKEY).unwrap();
 
     let solana_address = Pubkey::from_str(SOLANA_DEPOSIT_PUBKEY).unwrap();
@@ -60,13 +62,13 @@ fn relay_blocks_from_full_node() {
     let deposit_address = Address::p2wsh(script.as_script(), Network::Regtest);
     println!("Deposit address {deposit_address}");
 
+    let yona_client = get_yona_client(&config);
+
     let bitcoind_client = BitcoinRpcClient::new(
-        "http://localhost:19001",
-        Auth::UserPass("test".into(), "test".into()),
+        &config.bitcoind_url,
+        Auth::CookieFile(config.bitcoin_cookie_file.into()),
     )
     .unwrap();
-
-    let yona_client = get_yona_client();
 
     let tip = bitcoind_client.get_chain_tips().unwrap().remove(0);
     debug!("Current bitcoin tip {tip:?}");
@@ -132,13 +134,30 @@ fn relay_blocks_from_full_node() {
             };
 
             let last_submitted_height = stored_header.header.blockheight;
+
+            let best_block_hash = bitcoind_client.get_best_block_hash().unwrap();
+            let best_block_height = bitcoind_client
+                .get_block_info(&best_block_hash)
+                .unwrap()
+                .height as u32;
+            if last_submitted_height >= best_block_height {
+                info!("Latest BTC block {best_block_height} is already submitted to Yona. Waiting for a new one.");
+                thread::sleep(Duration::from_secs(30));
+                continue;
+            }
+
             let new_height = last_submitted_height + 1;
 
             let block_hash_to_submit = bitcoind_client.get_block_hash(new_height as u64).unwrap();
             let block_to_submit = bitcoind_client.get_block(&block_hash_to_submit).unwrap();
 
-            last_submit_tx =
-                submit_block(&program, main_state, block_to_submit, stored_header.header);
+            last_submit_tx = submit_block(
+                &program,
+                main_state,
+                block_to_submit,
+                new_height,
+                stored_header.header,
+            );
         }
     }
 
@@ -227,18 +246,14 @@ fn init_program(
     );
 }
 
-fn get_yona_client() -> AnchorClient<Rc<Keypair>> {
-    // Connect to the Yona devnet
-    let rpc_url = "http://devnet-rpc.yona.network:8899".to_string();
-    let ws_url = "ws://devnet-rpc.yona.network:8900".to_string();
-
+fn get_yona_client(config: &RelayConfig) -> AnchorClient<Rc<Keypair>> {
     let mut keypair_path = env::home_dir().unwrap();
-    keypair_path.push(".config/solana/id.json");
+    keypair_path.push(&config.yona_keipair);
     // Set up sender and recipient keypairs
     let sender = read_keypair_file(keypair_path).unwrap();
 
     let signer = Rc::new(sender);
-    let cluster = Cluster::Custom(rpc_url, ws_url);
+    let cluster = Cluster::Custom(config.yona_http.clone(), config.yona_ws.clone());
     AnchorClient::new_with_options(cluster, signer, CommitmentConfig::confirmed())
 }
 
@@ -246,6 +261,7 @@ fn submit_block(
     program: &Program<Rc<Keypair>>,
     main_state: Pubkey,
     block: Block,
+    height: u32,
     commited_header: CommittedBlockHeader,
 ) -> Signature {
     let yona_block_header = BlockHeader {
@@ -279,7 +295,7 @@ fn submit_block(
 
     block_hash.reverse();
     info!(
-        "Submitted block header {} tx {res}",
+        "Submitted block header. Hash {}, height {height}, Yona tx {res}",
         block_hash.to_lower_hex_string()
     );
 
@@ -371,7 +387,8 @@ fn relay_tx(
 
 fn main() {
     env_logger::init();
-    relay_blocks_from_full_node();
+    let config = read_config().unwrap();
+    relay_blocks_from_full_node(config);
     /*
     let electrum_client = ElectrumClient::new("tcp://electrum.blockstream.info:50001").unwrap();
 
