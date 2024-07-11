@@ -125,7 +125,7 @@ async fn main() -> std::io::Result<()> {
     .expect("Failed to create table");
 
     // Initialize Bitcoin RPC client
-    let rpc_url = "http://localhost:18443"; // Adjust as needed
+    let rpc_url = "http://127.0.0.1:18443"; // Adjust as needed
     let rpc_auth = Auth::CookieFile(std::env::var("BITCOIN_COOKIE").unwrap().into()); // Adjust credentials
     let rpc_client = Client::new(rpc_url, rpc_auth).expect("Failed to create RPC client");
 
