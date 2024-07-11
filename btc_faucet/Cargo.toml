@@ -8,5 +8,6 @@ actix-web = "4.0"
 bitcoincore-rpc = "0.19"
 chrono = "0.4"
 derive_more = "0.99"
+env_logger = "0.11"
 rusqlite = "0.31"
 serde = { version = "1.0", features = ["derive"] }

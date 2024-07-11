@@ -111,6 +111,7 @@ fn send_funds(rpc_client: &Client, address: &str) -> Result<Txid, SendFundsError
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
+    env_logger::init();
     // Initialize SQLite database
     let db = Connection::open("faucet.db").expect("Failed to open database");
     db.execute(
@@ -125,7 +126,7 @@ async fn main() -> std::io::Result<()> {
 
     // Initialize Bitcoin RPC client
     let rpc_url = "http://localhost:18443"; // Adjust as needed
-    let rpc_auth = Auth::UserPass("rpcuser".to_string(), "rpcpassword".to_string()); // Adjust credentials
+    let rpc_auth = Auth::CookieFile(std::env::var("BITCOIN_COOKIE").unwrap().into()); // Adjust credentials
     let rpc_client = Client::new(rpc_url, rpc_auth).expect("Failed to create RPC client");
 
     // Initialize app state
