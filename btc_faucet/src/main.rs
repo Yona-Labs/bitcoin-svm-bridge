@@ -94,12 +94,12 @@ impl From<bitcoincore_rpc::Error> for SendFundsError {
 }
 
 fn send_funds(rpc_client: &Client, address: &str) -> Result<Txid, SendFundsError> {
-    const FAUCET_AMOUNT: f64 = 0.1; // Amount in BTC
+    const FAUCET_AMOUNT: u64 = 10_000_000; // Amount in BTC
     let address = Address::from_str(address)?;
 
     Ok(rpc_client.send_to_address(
         &address.require_network(Network::Regtest)?,
-        Amount::from_sat(10_000_000),
+        Amount::from_sat(FAUCET_AMOUNT),
         None,
         None,
         None,
