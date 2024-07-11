@@ -339,17 +339,23 @@ fn relay_tx(
     tx_id: Txid,
     last_diff_adjustment: u32,
 ) {
-    let transaction = btc_client.get_transaction(&tx_id, None).unwrap();
-    let (hash, height) = match (transaction.info.blockhash, transaction.info.blockheight) {
-        (Some(hash), Some(height)) => (hash, height),
+    let transaction = btc_client.get_raw_transaction_info(&tx_id, None).unwrap();
+    let hash = match transaction.blockhash {
+        Some(hash) => hash,
         _ => {
             warn!("Transaction {tx_id} is not included to block yet");
             return;
         }
     };
-    let commited_header =
-        reconstruct_commited_header(&btc_client, &hash, height, last_diff_adjustment);
+
     let block_info = btc_client.get_block_info(&hash).unwrap();
+
+    let commited_header = reconstruct_commited_header(
+        &btc_client,
+        &hash,
+        block_info.height as u32,
+        last_diff_adjustment,
+    );
     let tx_pos = block_info
         .tx
         .iter()
