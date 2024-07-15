@@ -66,8 +66,7 @@ avm install 0.29.0
 avm use 0.29.0
 ```
 
-3. Ensure that you have default Solana key at `~/.config/solana/id.json`. Alternatively, set path to it
-   in `Anchor.toml`.
+3. Generate a new keypair: `solana-keygen new --no-bip39-passphrase -s -o anchor.json`.
 4. Install yarn.
 5. Run `yarn` at the project root.
 6. Run `anchor test` to test BTC relay program.
