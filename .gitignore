@@ -9,3 +9,4 @@ regenKeys.sh
 magicFix.sh
 block_relayer/config.toml
 id.json
+anchor.json

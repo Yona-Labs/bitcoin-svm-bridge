@@ -23,7 +23,7 @@ jobs:
       - name: List rustup toolchains
         run: rustup toolchain list
       - name: Generate new keygen
-        run: solana-keygen new
+        run: solana-keygen new --no-bip39-passphrase -s -o anchor.json
       - name: Check solana config
         run: solana config get
       - name: Install yarn dependencies
