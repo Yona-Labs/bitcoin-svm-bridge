@@ -257,6 +257,8 @@ describe("btc-relay", () => {
             program.programId
         );
 
+        const receiverBalanceBefore = await provider.connection.getBalance(mintReceiver);
+
         const ix = await programPaidBy(signer).methods
             .verifySmallTx(
                 Buffer.from(txBytes, "hex"),
@@ -282,12 +284,24 @@ describe("btc-relay", () => {
 
         // to catch error and log more details about it
         // .catch(e => console.error(e));
-        await provider.sendAndConfirm(tx, [signer], {
+        let signature = await provider.sendAndConfirm(tx, [signer], {
             skipPreflight: false
         }).catch(e => {
             console.log(e);
             throw e;
         });
+
+        const latestBlockhash = await provider.connection.getLatestBlockhash();
+        await provider.connection.confirmTransaction(
+            {
+                signature,
+                ...latestBlockhash,
+            },
+            commitment
+        );
+        const receiverBalanceAfter = await provider.connection.getBalance(mintReceiver);
+        const expectedBalance = receiverBalanceBefore + 4999153000;
+        chai.expect(receiverBalanceAfter).eq(expectedBalance);
 
     });
 
@@ -302,7 +316,7 @@ describe("btc-relay", () => {
 
         const txIdBytes = Buffer.from(txId, "hex").reverse();
         const txBytes = Buffer.from(bigTxHex, "hex");
-        const txPos = new anchor.BN(25);
+        const txPos = new anchor.BN(1);
 
         const [txAccount, bump] = anchor.web3.PublicKey.findProgramAddressSync(
             [txIdBytes],
@@ -337,9 +351,12 @@ describe("btc-relay", () => {
 
         // to catch error and log more details about it
         // .catch(e => console.error(e));
-        await chai.expect(provider.sendAndConfirm(tx, [signer], {
+        await provider.sendAndConfirm(tx, [signer], {
             skipPreflight: false
-        })).to.be.rejected;
+        }).catch(e => {
+            console.error(e);
+            throw e
+        });
 
         const chunkSize = 800;
         for (let i = 0; i < txBytes.length; i += chunkSize) {
@@ -375,6 +392,7 @@ describe("btc-relay", () => {
             program.programId
         );
 
+        const receiverBalanceBefore = await provider.connection.getBalance(mintReceiver);
         const finalizeIx = await programPaidBy(signer).methods
             .finalizeTxProcessing(
                 txIdBytes
@@ -382,7 +400,8 @@ describe("btc-relay", () => {
             .accounts({
                 signer: signer.publicKey,
                 txAccount,
-                depositAccount
+                depositAccount,
+                mintReceiver
             })
             .signers([signer])
             .instruction();
@@ -412,38 +431,8 @@ describe("btc-relay", () => {
             },
             commitment
         );
-    });
-
-    return;
-
-    it("get state", async () => {
-        const fetched = await program.account.mainState.fetch(mainStateKey);
-
-        fetched.blockCommitments = null;
-        // console.log(fetched);
-    })
-
-    it("get past log", async () => {
-        const coder = new anchor.BorshCoder(program.idl);
-        const eventParser = new anchor.EventParser(program.programId, coder);
-
-        const fetched = await provider.connection.getSignaturesForAddress(blockTopicKey, {
-            limit: 1000
-        }, "confirmed");
-
-        // console.log(fetched);
-
-        const transaction = await provider.connection.getTransaction(fetched[fetched.length - 1].signature, {
-            commitment: "confirmed"
-        });
-
-        // console.log("TX: ", transaction);
-
-        if (transaction.meta.err == null) {
-            const events = eventParser.parseLogs(transaction.meta.logMessages);
-            for (let event of events) {
-                // console.log("Event: ", JSON.stringify(event, null, 4));
-            }
-        }
+        const receiverBalanceAfter = await provider.connection.getBalance(mintReceiver);
+        const expectedBalance = receiverBalanceBefore + LAMPORTS_PER_SOL;
+        chai.expect(receiverBalanceAfter).eq(expectedBalance);
     });
 });

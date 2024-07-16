@@ -106,7 +106,6 @@ pub struct CloseForkAccount<'info> {
 pub struct VerifyTransaction<'info> {
     #[account(mut)]
     pub signer: Signer<'info>,
-    #[cfg(not(feature = "mocked"))]
     #[account(
         seeds = [b"state".as_ref()],
         bump
@@ -122,7 +121,6 @@ pub struct VerifyTransaction<'info> {
 pub struct BlockHeight<'info> {
     #[account(mut)]
     pub signer: Signer<'info>,
-    #[cfg(not(feature = "mocked"))]
     #[account(
         seeds = [b"state".as_ref()],
         bump
@@ -187,4 +185,6 @@ pub struct FinalizeTx<'info> {
     pub tx_account: Account<'info, BigTxState>,
     #[account(mut, seeds = [b"solana_deposit".as_ref()], bump)]
     pub deposit_account: AccountLoader<'info, DepositState>,
+    #[account(mut)]
+    pub mint_receiver: SystemAccount<'info>,
 }

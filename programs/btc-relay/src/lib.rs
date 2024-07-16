@@ -20,12 +20,7 @@ declare_id!("HY7CpkPjh5FgcU22RmEpqD6T5ZNWSgmwiTDYE5yHRfmf");
 #[program]
 pub mod btc_relay {
     use super::*;
-    use crate::utils::{bridge_deposit_script, BITCOIN_DEPOSIT_PUBKEY};
-    use bitcoin::address::Address;
-    use bitcoin::hashes::hash160::Hash as Hash160;
-    use bitcoin::hashes::Hash;
-    use bitcoin::hex::FromHex;
-    use bitcoin::Network;
+    use crate::utils::bridge_mint_amount;
 
     // Initializes the program with the initial block header,
     // this can be any past block header with high enough confirmations to be sure it doesn't get re-orged.
@@ -389,70 +384,47 @@ pub mod btc_relay {
         reversed_merkle_proof: Vec<[u8; 32]>,
         commited_header: CommittedBlockHeader,
     ) -> Result<()> {
-        #[cfg(feature = "mocked")]
-        {
-            return Ok(());
-        }
+        let block_height = commited_header.blockheight;
 
-        #[cfg(not(feature = "mocked"))]
-        {
-            let block_height = commited_header.blockheight;
+        let main_state = ctx.accounts.main_state.load()?;
 
-            let main_state = ctx.accounts.main_state.load()?;
+        require!(
+            main_state.block_height - block_height + 1 >= confirmations,
+            RelayErrorCode::BlockConfirmations
+        );
 
-            require!(
-                main_state.block_height - block_height + 1 >= confirmations,
-                RelayErrorCode::BlockConfirmations
-            );
+        let commit_hash = commited_header.get_commit_hash()?;
+        require!(
+            commit_hash == main_state.get_commitment(block_height),
+            RelayErrorCode::PrevBlockCommitment
+        );
 
-            let commit_hash = commited_header.get_commit_hash()?;
-            require!(
-                commit_hash == main_state.get_commitment(block_height),
-                RelayErrorCode::PrevBlockCommitment
-            );
+        let bitcoin_tx = Transaction::consensus_decode(&mut tx_bytes.as_slice()).unwrap();
+        let amount_to_transfer =
+            bridge_mint_amount(&bitcoin_tx, ctx.accounts.mint_receiver.key().to_bytes());
 
-            let bitcoin_tx = Transaction::consensus_decode(&mut tx_bytes.as_slice()).unwrap();
+        require!(amount_to_transfer > 0, RelayErrorCode::NoDepositOutputs);
 
-            let bridge_pubkey: [u8; 33] = FromHex::from_hex(BITCOIN_DEPOSIT_PUBKEY).unwrap();
-            let pubkey_hash = Hash160::hash(&bridge_pubkey);
-            let expected_script = bridge_deposit_script(
-                ctx.accounts.mint_receiver.key.to_bytes(),
-                pubkey_hash.to_byte_array(),
-            );
+        let computed_merkle = utils::compute_merkle(
+            bitcoin_tx.compute_txid().as_ref(),
+            tx_index,
+            reversed_merkle_proof,
+        );
 
-            let expected_address = Address::p2wsh(expected_script.as_script(), Network::Regtest);
-            let actual_address = Address::from_script(
-                bitcoin_tx.output[0].script_pubkey.as_script(),
-                Network::Regtest,
-            )
-            .unwrap();
+        require!(
+            computed_merkle == commited_header.header.merkle_root,
+            RelayErrorCode::MerkleRoot
+        );
 
-            require!(
-                actual_address == expected_address,
-                RelayErrorCode::InvalidDepositAddress
-            );
+        let sol_amount = amount_to_transfer * 10;
 
-            let computed_merkle = utils::compute_merkle(
-                bitcoin_tx.compute_txid().as_ref(),
-                tx_index,
-                &reversed_merkle_proof,
-            );
-
-            require!(
-                computed_merkle == commited_header.header.merkle_root,
-                RelayErrorCode::MerkleRoot
-            );
-
-            let sol_amount = bitcoin_tx.output[0].value.to_sat() * 10;
-
-            **ctx
-                .accounts
-                .deposit_account
-                .as_ref()
-                .try_borrow_mut_lamports()? -= sol_amount;
-            **ctx.accounts.mint_receiver.try_borrow_mut_lamports()? += sol_amount;
-            Ok(())
-        }
+        **ctx
+            .accounts
+            .deposit_account
+            .as_ref()
+            .try_borrow_mut_lamports()? -= sol_amount;
+        **ctx.accounts.mint_receiver.try_borrow_mut_lamports()? += sol_amount;
+        Ok(())
     }
 
     // Verifies block height of the main chain
@@ -465,42 +437,22 @@ pub mod btc_relay {
     // This can be called a standalone instruction, that gets executed
     // before the instructions that depend on bitcoin relay having a specific block height
     pub fn block_height(ctx: Context<BlockHeight>, value: u32, operation: u32) -> Result<()> {
-        #[cfg(feature = "mocked")]
-        {
-            require!(
-                match operation {
-                    0 => 845414 < value,
-                    1 => 845414 <= value,
-                    2 => 845414 > value,
-                    3 => 845414 >= value,
-                    4 => 845414 == value,
-                    _ => false,
-                },
-                RelayErrorCode::InvalidBlockheight
-            );
+        let main_state = ctx.accounts.main_state.load()?;
+        let block_height = main_state.block_height;
 
-            return Ok(());
-        }
+        require!(
+            match operation {
+                0 => block_height < value,
+                1 => block_height <= value,
+                2 => block_height > value,
+                3 => block_height >= value,
+                4 => block_height == value,
+                _ => false,
+            },
+            RelayErrorCode::InvalidBlockheight
+        );
 
-        #[cfg(not(feature = "mocked"))]
-        {
-            let main_state = ctx.accounts.main_state.load()?;
-            let block_height = main_state.block_height;
-
-            require!(
-                match operation {
-                    0 => block_height < value,
-                    1 => block_height <= value,
-                    2 => block_height > value,
-                    3 => block_height >= value,
-                    4 => block_height == value,
-                    _ => false,
-                },
-                RelayErrorCode::InvalidBlockheight
-            );
-
-            Ok(())
-        }
+        Ok(())
     }
 
     pub fn deposit(ctx: Context<Deposit>, amount: u64) -> Result<()> {
@@ -545,10 +497,7 @@ pub mod btc_relay {
             RelayErrorCode::PrevBlockCommitment
         );
 
-        let computed_merkle = utils::compute_merkle(&tx_id, tx_index, &reversed_merkle_proof);
-
-        msg!("Computed merkle {:?}", computed_merkle);
-        msg!("Header root {:?}", commited_header.header.merkle_root);
+        let computed_merkle = utils::compute_merkle(&tx_id, tx_index, reversed_merkle_proof);
 
         require!(
             computed_merkle == commited_header.header.merkle_root,
@@ -573,16 +522,20 @@ pub mod btc_relay {
                 .unwrap();
 
         assert_eq!(tx_id, bitcoin_tx.compute_txid().as_ref());
+        let amount_to_transfer =
+            bridge_mint_amount(&bitcoin_tx, ctx.accounts.mint_receiver.key().to_bytes());
 
-        let sol_amount = bitcoin_tx.output[0].value.to_sat() * 10;
-        msg!("Sol amount to transfer {}", sol_amount);
+        require!(amount_to_transfer > 0, RelayErrorCode::NoDepositOutputs);
+
+        let sol_amount = amount_to_transfer * 10;
 
         **ctx
             .accounts
             .deposit_account
             .as_ref()
             .try_borrow_mut_lamports()? -= sol_amount;
-        **ctx.accounts.user.try_borrow_mut_lamports()? += sol_amount;
+
+        **ctx.accounts.mint_receiver.try_borrow_mut_lamports()? += sol_amount;
         Ok(())
     }
 }

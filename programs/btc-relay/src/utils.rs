@@ -1,7 +1,11 @@
-use anchor_lang::{prelude::*, solana_program::clock, solana_program::hash};
+use anchor_lang::{prelude::*, solana_program::clock};
 use bitcoin::blockdata::opcodes::all::*;
+use bitcoin::hashes::hash160::Hash as Hash160;
+use bitcoin::hashes::sha256d;
+use bitcoin::hashes::Hash;
+use bitcoin::hex::FromHex;
 use bitcoin::script::Builder;
-
+use bitcoin::{Address, Network, Transaction};
 // Utilities for block header verification
 use crate::arrayutils;
 use crate::errors::*;
@@ -301,28 +305,24 @@ pub fn verify_header(
 // reversed_ prefix is used because bitcoin uses little endian encoding
 pub fn compute_merkle(
     reversed_txid: &[u8; 32],
-    _tx_index: u32,
-    reversed_merkle_proof: &Vec<[u8; 32]>,
+    mut tx_index: u32,
+    reversed_merkle_proof: Vec<[u8; 32]>,
 ) -> [u8; 32] {
     if reversed_merkle_proof.is_empty() {
         return *reversed_txid;
     }
 
     let mut current_hash = *reversed_txid;
-    let mut tx_index = _tx_index;
 
-    for piece in reversed_merkle_proof.iter() {
-        let mut msg = Vec::with_capacity(32 + 32);
-        if tx_index & 0x1 == 0 {
+    for piece in reversed_merkle_proof {
+        let bytes = if tx_index & 0x1 == 0 {
             //First pos
-            msg.extend_from_slice(&current_hash);
-            msg.extend_from_slice(piece);
+            [current_hash, piece].concat()
         } else {
             //Second pos
-            msg.extend_from_slice(piece);
-            msg.extend_from_slice(&current_hash);
-        }
-        current_hash = hash::hash(&hash::hash(&msg).to_bytes()).to_bytes();
+            [piece, current_hash].concat()
+        };
+        current_hash = sha256d::Hash::hash(&bytes).to_byte_array();
         tx_index >>= 1;
     }
 
@@ -337,4 +337,18 @@ pub fn bridge_deposit_script(solana_pub: [u8; 32], bitcoin_pubkey_hash: [u8; 20]
         .push_slice(bitcoin_pubkey_hash)
         .push_opcode(OP_EQUALVERIFY)
         .push_opcode(OP_CHECKSIG)
+}
+
+pub fn bridge_mint_amount(bitcoin_tx: &Transaction, solana_pub: [u8; 32]) -> u64 {
+    let bridge_pubkey: [u8; 33] = FromHex::from_hex(BITCOIN_DEPOSIT_PUBKEY).unwrap();
+    let pubkey_hash = Hash160::hash(&bridge_pubkey);
+    let expected_script = bridge_deposit_script(solana_pub, pubkey_hash.to_byte_array());
+    let expected_script_pubkey =
+        Address::p2wsh(expected_script.as_script(), Network::Regtest).script_pubkey();
+
+    bitcoin_tx
+        .output
+        .iter()
+        .filter(|out| out.script_pubkey == expected_script_pubkey)
+        .fold(0, |total, out| total + out.value.to_sat())
 }
