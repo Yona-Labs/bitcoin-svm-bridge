@@ -823,12 +823,14 @@ dependencies = [
  "base64 0.22.1",
  "bitcoin",
  "bitcoincore-rpc",
+ "bollard",
  "btc-relay",
  "env_logger 0.11.3",
  "log",
  "serde",
  "solana-transaction-status",
  "testcontainers",
+ "tokio",
  "toml 0.8.14",
 ]
 

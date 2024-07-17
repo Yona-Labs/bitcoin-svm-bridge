@@ -16,7 +16,9 @@ solana-transaction-status = "1.18.18"
 toml = "0.8"
 
 [dev-dependencies]
+bollard = "0.16.1"
 testcontainers = "0.20.0"
+tokio = "1"
 
 [patch.crates-io.aes-gcm-siv]
 git = "https://github.com/artemii235/AEADs"
