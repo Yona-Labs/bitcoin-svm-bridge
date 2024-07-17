@@ -10,7 +10,7 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build:
+  anchor:
     runs-on: ubuntu-latest
     container: backpackapp/build:v0.29.0
 

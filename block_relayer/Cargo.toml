@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-anchor-client = "0.29.0"
+anchor-client = "0.29"
 base64 = "0.22"
 bitcoin = { version = "=0.32.2", default-features = false }
 bitcoincore-rpc = "0.19.0"
@@ -12,5 +12,16 @@ btc-relay = { path = "../programs/btc-relay" }
 env_logger = "0.11"
 log = "0.4"
 serde = { version = "1.0", features = ["derive"] }
-solana-transaction-status = "1.18"
+solana-transaction-status = "1.18.18"
 toml = "0.8"
+
+[dev-dependencies]
+testcontainers = "0.20.0"
+
+[patch.crates-io.aes-gcm-siv]
+git = "https://github.com/artemii235/AEADs"
+rev = "874045c42beb11fc8a547cb1c67bf5895172a2d1"
+
+[patch.crates-io.curve25519-dalek]
+git = "https://github.com/solana-labs/curve25519-dalek.git"
+rev = "b500cdc2a920cd5bff9e2dd974d7b97349d61464"
