@@ -1,6 +1,11 @@
+use block_relayer_lib::config::{BitcoinAuth, RelayConfig};
+use block_relayer_lib::{relay_blocks_from_full_node, run_init_program};
 use bollard::container::RemoveContainerOptions;
+use std::io::Write;
+use std::process::{Command, Stdio};
 use std::time::Duration;
-use testcontainers::core::{IntoContainerPort, Mount};
+use testcontainers::core::wait::LogWaitStrategy;
+use testcontainers::core::{IntoContainerPort, Mount, WaitFor};
 use testcontainers::runners::AsyncRunner;
 use testcontainers::{ContainerRequest, GenericImage, ImageExt};
 
@@ -8,6 +13,8 @@ const ESPLORA_CONTAINER: &str = "esplora_for_bridge_tests";
 
 #[tokio::test]
 async fn it_works() {
+    env_logger::init();
+
     let bollard_client =
         bollard::Docker::connect_with_defaults().expect("Docker to be installed and running");
 
@@ -26,7 +33,11 @@ async fn it_works() {
 
     let current_dir = std::env::current_dir().unwrap();
 
-    let container = ContainerRequest::from(GenericImage::new("artempikulin/esplora", "latest"))
+    let image = GenericImage::new("artempikulin/esplora", "latest").with_wait_for(WaitFor::Log(
+        LogWaitStrategy::stderr("[notice] Bootstrapped 100% (done): Done"),
+    ));
+
+    let container = ContainerRequest::from(image)
         .with_cmd([
             "bash",
             "-c",
@@ -47,5 +58,30 @@ async fn it_works() {
         .await
         .expect("Esplora container to be started");
 
-    tokio::time::sleep(Duration::from_secs(1000)).await;
+    let anchor_localnet = Command::new("anchor")
+        .arg("localnet")
+        .current_dir(current_dir.join("../"))
+        .spawn()
+        .expect("spawn anchor localnet");
+
+    tokio::time::sleep(Duration::from_secs(5)).await;
+
+    let relay_config = RelayConfig {
+        bitcoind_url: "http://localhost:18443".into(),
+        bitcoin_auth: BitcoinAuth::UserPass {
+            user: "test".into(),
+            password: "test".into(),
+        },
+        yona_http: "http://localhost:8899".into(),
+        yona_ws: "ws://localhost:8900/".into(),
+        yona_keipair: current_dir.join("../anchor.json").display().to_string(),
+    };
+
+    let handle = std::thread::spawn(|| run_init_program(relay_config));
+
+    tokio::time::sleep(Duration::from_secs(10)).await;
+
+    if handle.is_finished() {
+        println!("Init result {}", handle.join().unwrap().unwrap());
+    }
 }

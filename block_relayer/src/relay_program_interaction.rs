@@ -67,12 +67,16 @@ pub(crate) fn init_deposit(program: &Program<Rc<Keypair>>, amount: u64) {
     info!("Deposit tx sig {res}");
 }
 
-pub(crate) fn init_program(
+#[derive(Debug)]
+pub enum InitError {}
+
+pub fn init_program(
     program: &Program<Rc<Keypair>>,
-    main_state: Pubkey,
     block: Block,
     block_height: u32,
-) {
+) -> Result<Signature, InitError> {
+    let (main_state, _) = Pubkey::find_program_address(&[b"state"], &program.id());
+
     let yona_block_header = BlockHeader {
         version: block.header.version.to_consensus() as u32,
         reversed_prev_blockhash: block.header.prev_blockhash.to_byte_array(),
@@ -109,6 +113,8 @@ pub(crate) fn init_program(
         "Submitted block {}, tx sig {res}",
         block_hash.to_lower_hex_string()
     );
+
+    Ok(res)
 }
 
 pub(crate) fn relay_tx(

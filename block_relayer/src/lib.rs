@@ -4,7 +4,7 @@ mod relay_program_interaction;
 
 use crate::config::RelayConfig;
 use crate::relay_program_interaction::{
-    init_deposit, init_program, reconstruct_commited_header, relay_tx, submit_block,
+    init_deposit, init_program, reconstruct_commited_header, relay_tx, submit_block, InitError,
 };
 use anchor_client::anchor_lang::{AccountDeserialize, AnchorDeserialize, Id};
 use anchor_client::solana_sdk::commitment_config::CommitmentConfig;
@@ -65,20 +65,10 @@ pub fn relay_blocks_from_full_node(config: RelayConfig) {
     let bitcoind_client =
         BitcoinRpcClient::new(&config.bitcoind_url, config.bitcoin_auth.into()).unwrap();
 
-    let tip = bitcoind_client.get_chain_tips().unwrap().remove(0);
-    debug!("Current bitcoin tip {tip:?}");
-
-    let last_block = bitcoind_client.get_block(&tip.hash).unwrap();
-    debug!("Bitcoin last block {last_block:?}");
-
     let relay_program = BtcRelay::id();
     let program = yona_client.program(relay_program).unwrap();
 
     let (main_state, _) = Pubkey::find_program_address(&[b"state"], &relay_program);
-
-    if env::var("INIT_PROGRAM").is_ok() {
-        init_program(&program, main_state, last_block, tip.height as u32);
-    }
 
     let mut last_submit_tx = Signature::from_str(START_SUBMIT_FROM_TX).unwrap();
     if env::var("RELAY_BLOCKS").is_ok() {
@@ -176,4 +166,23 @@ pub fn relay_blocks_from_full_node(config: RelayConfig) {
             main_state_data.last_diff_adjustment,
         );
     }
+}
+
+/// Initializes BTC relay program using the current Bitcoin tip (latest block)
+pub fn run_init_program(config: RelayConfig) -> Result<Signature, InitError> {
+    let yona_client = get_yona_client(&config);
+
+    let bitcoind_client =
+        BitcoinRpcClient::new(&config.bitcoind_url, config.bitcoin_auth.into()).unwrap();
+
+    let relay_program = BtcRelay::id();
+    let program = yona_client.program(relay_program).unwrap();
+
+    let tip = bitcoind_client.get_chain_tips().unwrap().remove(0);
+    debug!("Current bitcoin tip {tip:?}");
+
+    let last_block = bitcoind_client.get_block(&tip.hash).unwrap();
+    debug!("Bitcoin last block {last_block:?}");
+
+    init_program(&program, last_block, tip.height as u32)
 }
