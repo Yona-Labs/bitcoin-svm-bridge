@@ -1,12 +1,12 @@
 use bitcoin::{hash_types::TxMerkleNode, hashes::Hash, Txid};
 
-pub(crate) struct Proof {
+pub struct Proof {
     proof: Vec<TxMerkleNode>,
     position: usize,
 }
 
 impl Proof {
-    pub(crate) fn create(txids: &[Txid], position: usize) -> Self {
+    pub fn create(txids: &[Txid], position: usize) -> Self {
         assert!(position < txids.len());
         let mut offset = position;
         let mut hashes: Vec<TxMerkleNode> = txids
@@ -40,24 +40,18 @@ impl Proof {
         Self { proof, position }
     }
 
-    pub(crate) fn to_hex(&self) -> Vec<String> {
+    pub fn to_hex(&self) -> Vec<String> {
         self.proof
             .iter()
             .map(|node| format!("{:x}", node))
             .collect()
     }
 
-    pub(crate) fn to_reversed_vec(&self) -> Vec<[u8; 32]> {
-        self.proof
-            .iter()
-            .map(|node| {
-                let mut node = node.to_byte_array();
-                node
-            })
-            .collect()
+    pub fn to_reversed_vec(&self) -> Vec<[u8; 32]> {
+        self.proof.iter().map(|node| node.to_byte_array()).collect()
     }
 
-    pub(crate) fn position(&self) -> usize {
+    pub fn position(&self) -> usize {
         self.position
     }
 }

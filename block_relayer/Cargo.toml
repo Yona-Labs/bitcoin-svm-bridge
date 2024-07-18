@@ -3,6 +3,9 @@ name = "block_relayer"
 version = "0.1.0"
 edition = "2021"
 
+[lib]
+name = "block_relayer_lib"
+
 [dependencies]
 anchor-client = "0.29"
 base64 = "0.22"
@@ -20,6 +23,7 @@ bollard = "0.16.1"
 testcontainers = "0.20.0"
 tokio = "1"
 
+# for more info on these patches, check https://github.com/solana-labs/solana/blob/27eff8408b7223bb3c4ab70523f8a8dca3ca6645/Cargo.toml#L475
 [patch.crates-io.aes-gcm-siv]
 git = "https://github.com/artemii235/AEADs"
 rev = "874045c42beb11fc8a547cb1c67bf5895172a2d1"

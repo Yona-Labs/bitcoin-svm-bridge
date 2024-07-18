@@ -33,7 +33,9 @@ async fn it_works() {
             "/srv/explorer/run.sh bitcoin-regtest explorer",
         ])
         .with_container_name(ESPLORA_CONTAINER)
-        .with_env_var("$ELECTRS_ARGS", "--auth=test:test")
+        // Blockstream seem to not port configuration update from romanz upstream, which has a separate
+        // --auth arg.
+        .with_env_var("ELECTRS_ARGS", "--cookie=test:test")
         .with_mapped_port(50001, 50001.tcp())
         .with_mapped_port(8094, 80.tcp())
         .with_mapped_port(18443, 18443.tcp())
@@ -45,5 +47,5 @@ async fn it_works() {
         .await
         .expect("Esplora container to be started");
 
-    std::thread::sleep(Duration::from_secs(300));
+    tokio::time::sleep(Duration::from_secs(1000)).await;
 }
