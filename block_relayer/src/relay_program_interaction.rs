@@ -1,20 +1,19 @@
-use crate::merkle::Proof;
 use anchor_client::anchor_lang::prelude::AccountMeta;
 use anchor_client::solana_sdk::pubkey::Pubkey;
 use anchor_client::solana_sdk::signature::{Keypair, Signature};
 use anchor_client::Program;
 use bitcoin::hashes::Hash;
 use bitcoin::hex::DisplayHex;
-use bitcoin::{Block, BlockHash, Txid};
-use bitcoincore_rpc::{Auth, Client as BitcoinRpcClient, RpcApi};
-use btc_relay::accounts::{Deposit, Initialize, SubmitBlockHeaders, VerifyTransaction};
+use bitcoin::{Block, BlockHash};
+use bitcoincore_rpc::{Client as BitcoinRpcClient, RpcApi};
+use btc_relay::accounts::{Deposit, Initialize, SubmitBlockHeaders};
 use btc_relay::instruction::{
     Deposit as DepositInstruction, Initialize as InitializeInstruction,
-    SubmitBlockHeaders as SubmitBlockHeadersInstruction, VerifySmallTx as VerifySmallTxInstruction,
+    SubmitBlockHeaders as SubmitBlockHeadersInstruction,
 };
 use btc_relay::structs::{BlockHeader, CommittedBlockHeader};
-use log::{debug, info, warn};
-use std::rc::Rc;
+use log::{debug, info};
+use std::sync::Arc;
 
 pub(crate) fn reconstruct_commited_header(
     bitcoind_client: &BitcoinRpcClient,
@@ -50,7 +49,7 @@ pub(crate) fn reconstruct_commited_header(
     }
 }
 
-pub(crate) fn init_deposit(program: &Program<Rc<Keypair>>, amount: u64) {
+pub(crate) fn init_deposit(program: &Program<Arc<Keypair>>, amount: u64) {
     let (deposit_account, _) = Pubkey::find_program_address(&[b"solana_deposit"], &program.id());
 
     let res = program
@@ -71,7 +70,7 @@ pub(crate) fn init_deposit(program: &Program<Rc<Keypair>>, amount: u64) {
 pub enum InitError {}
 
 pub fn init_program(
-    program: &Program<Rc<Keypair>>,
+    program: &Program<Arc<Keypair>>,
     block: Block,
     block_height: u32,
 ) -> Result<Signature, InitError> {
@@ -117,63 +116,8 @@ pub fn init_program(
     Ok(res)
 }
 
-pub(crate) fn relay_tx(
-    program: &Program<Rc<Keypair>>,
-    main_state: Pubkey,
-    btc_client: &BitcoinRpcClient,
-    tx_id: Txid,
-    last_diff_adjustment: u32,
-) {
-    let transaction = btc_client.get_raw_transaction_info(&tx_id, None).unwrap();
-    let hash = match transaction.blockhash {
-        Some(hash) => hash,
-        _ => {
-            warn!("Transaction {tx_id} is not included to block yet");
-            return;
-        }
-    };
-
-    let block_info = btc_client.get_block_info(&hash).unwrap();
-
-    let commited_header = reconstruct_commited_header(
-        &btc_client,
-        &hash,
-        block_info.height as u32,
-        last_diff_adjustment,
-    );
-    let tx_pos = block_info
-        .tx
-        .iter()
-        .position(|in_block| *in_block == tx_id)
-        .unwrap();
-    let proof = Proof::create(&block_info.tx, tx_pos);
-
-    let (deposit_account, _) = Pubkey::find_program_address(&[b"solana_deposit"], &program.id());
-
-    let relay_yona_tx = program
-        .request()
-        .accounts(VerifyTransaction {
-            signer: program.payer(),
-            main_state,
-            deposit_account,
-            // Pubkey::from_str("CgxQmREYVuwyPzHcH19iBQDtPjcHEWuzfRgWrtzepHLs").unwrap()
-            mint_receiver: program.payer(),
-        })
-        .args(VerifySmallTxInstruction {
-            tx_bytes: transaction.hex,
-            confirmations: 1,
-            tx_index: tx_pos as u32,
-            commited_header,
-            reversed_merkle_proof: proof.to_reversed_vec(),
-        })
-        .send()
-        .unwrap();
-
-    info!("Relayed bitcoin tx {} to Yona: {relay_yona_tx}", tx_id);
-}
-
 pub(crate) fn submit_block(
-    program: &Program<Rc<Keypair>>,
+    program: &Program<Arc<Keypair>>,
     main_state: Pubkey,
     block: Block,
     height: u32,

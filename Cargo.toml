@@ -1,11 +1,8 @@
 [workspace]
 members = [
     "programs/*",
-    "block_relayer"
-]
-
-exclude = [
     "btc_faucet",
+    "block_relayer"
 ]
 
 [profile.release]
