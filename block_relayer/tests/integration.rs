@@ -1,22 +1,33 @@
 use block_relayer_lib::config::{BitcoinAuth, RelayConfig};
-use block_relayer_lib::{relay_blocks_from_full_node, run_init_program};
+use block_relayer_lib::run_init_program;
 use bollard::container::RemoveContainerOptions;
-use std::io::Write;
-use std::process::{Command, Stdio};
+use bollard::Docker;
+use once_cell::sync::Lazy;
+use std::path::PathBuf;
+use std::process::{Child, Command};
+use std::thread::sleep;
 use std::time::Duration;
 use testcontainers::core::wait::LogWaitStrategy;
 use testcontainers::core::{IntoContainerPort, Mount, WaitFor};
 use testcontainers::runners::AsyncRunner;
-use testcontainers::{ContainerRequest, GenericImage, ImageExt};
+use testcontainers::{ContainerAsync, ContainerRequest, GenericImage, ImageExt};
+use tokio::runtime::Runtime;
 
 const ESPLORA_CONTAINER: &str = "esplora_for_bridge_tests";
 
-#[tokio::test]
-async fn it_works() {
+struct TestCtx {
+    docker: Docker,
+    esplora_container: ContainerAsync<GenericImage>,
+    anchor_localnet_handle: Child,
+    current_dir: PathBuf,
+}
+
+static TEST_RUNTIME: Lazy<Runtime> =
+    Lazy::new(|| Runtime::new().expect("Tokio runtime to be created"));
+static TEST_CTX: Lazy<TestCtx> = Lazy::new(|| {
     env_logger::init();
 
-    let bollard_client =
-        bollard::Docker::connect_with_defaults().expect("Docker to be installed and running");
+    let docker = Docker::connect_with_defaults().expect("Docker to be installed and running");
 
     let rm_options = RemoveContainerOptions {
         v: false,
@@ -24,20 +35,25 @@ async fn it_works() {
         link: false,
     };
 
-    if let Err(_) = bollard_client
-        .remove_container(ESPLORA_CONTAINER, Some(rm_options))
-        .await
+    if let Err(_) =
+        TEST_RUNTIME.block_on(docker.remove_container(ESPLORA_CONTAINER, Some(rm_options)))
     {
         // just do nothing here
-    }
+    };
 
     let current_dir = std::env::current_dir().unwrap();
 
+    let anchor_localnet_handle = Command::new("anchor")
+        .arg("localnet")
+        .current_dir(current_dir.join("../"))
+        .spawn()
+        .expect("spawn anchor localnet");
+
     let image = GenericImage::new("artempikulin/esplora", "latest").with_wait_for(WaitFor::Log(
-        LogWaitStrategy::stderr("[notice] Bootstrapped 100% (done): Done"),
+        LogWaitStrategy::stderr("Electrum RPC server running on"),
     ));
 
-    let container = ContainerRequest::from(image)
+    let container_req = ContainerRequest::from(image)
         .with_cmd([
             "bash",
             "-c",
@@ -53,19 +69,25 @@ async fn it_works() {
         .with_mount(Mount::bind_mount(
             current_dir.join("for_tests").display().to_string(),
             "/data",
-        ))
-        .start()
-        .await
+        ));
+
+    let esplora_container = TEST_RUNTIME
+        .block_on(container_req.start())
         .expect("Esplora container to be started");
 
-    let anchor_localnet = Command::new("anchor")
-        .arg("localnet")
-        .current_dir(current_dir.join("../"))
-        .spawn()
-        .expect("spawn anchor localnet");
+    // give everything some additional time to initialize
+    sleep(Duration::from_secs(5));
 
-    tokio::time::sleep(Duration::from_secs(5)).await;
+    TestCtx {
+        docker,
+        esplora_container,
+        anchor_localnet_handle,
+        current_dir,
+    }
+});
 
+#[test]
+fn init_program() {
     let relay_config = RelayConfig {
         bitcoind_url: "http://localhost:18443".into(),
         bitcoin_auth: BitcoinAuth::UserPass {
@@ -74,14 +96,14 @@ async fn it_works() {
         },
         yona_http: "http://localhost:8899".into(),
         yona_ws: "ws://localhost:8900/".into(),
-        yona_keipair: current_dir.join("../anchor.json").display().to_string(),
+        yona_keipair: TEST_CTX
+            .current_dir
+            .join("../anchor.json")
+            .display()
+            .to_string(),
     };
 
-    let handle = std::thread::spawn(|| run_init_program(relay_config));
+    let init_result = run_init_program(relay_config).expect("run_init_program");
 
-    tokio::time::sleep(Duration::from_secs(10)).await;
-
-    if handle.is_finished() {
-        println!("Init result {}", handle.join().unwrap().unwrap());
-    }
+    println!("Init result {}", init_result);
 }

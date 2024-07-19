@@ -20,14 +20,6 @@ toml = "0.8"
 
 [dev-dependencies]
 bollard = "0.16.1"
+once_cell = "1"
 testcontainers = "0.20.0"
 tokio = "1"
-
-# for more info on these patches, check https://github.com/solana-labs/solana/blob/27eff8408b7223bb3c4ab70523f8a8dca3ca6645/Cargo.toml#L475
-[patch.crates-io.aes-gcm-siv]
-git = "https://github.com/artemii235/AEADs"
-rev = "874045c42beb11fc8a547cb1c67bf5895172a2d1"
-
-[patch.crates-io.curve25519-dalek]
-git = "https://github.com/solana-labs/curve25519-dalek.git"
-rev = "b500cdc2a920cd5bff9e2dd974d7b97349d61464"

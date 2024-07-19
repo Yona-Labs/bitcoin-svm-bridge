@@ -827,6 +827,7 @@ dependencies = [
  "btc-relay",
  "env_logger 0.11.3",
  "log",
+ "once_cell",
  "serde",
  "solana-transaction-status",
  "testcontainers",
