@@ -8,6 +8,7 @@ name = "block_relayer_lib"
 
 [dependencies]
 anchor-client = "0.29"
+actix-cors = "0.7.0"
 actix-web = "4"
 base64 = "0.22"
 bitcoin = { version = "=0.32.2", default-features = false }

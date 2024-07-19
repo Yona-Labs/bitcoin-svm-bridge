@@ -7,6 +7,7 @@ use crate::merkle::Proof;
 use crate::relay_program_interaction::{
     init_deposit, init_program, reconstruct_commited_header, submit_block, InitError,
 };
+use actix_cors::Cors;
 use actix_web::{web, App, HttpResponse, HttpServer, Responder};
 use anchor_client::anchor_lang::{AccountDeserialize, AnchorDeserialize, Id};
 use anchor_client::solana_sdk::commitment_config::CommitmentConfig;
@@ -335,6 +336,7 @@ pub async fn relay_transactions(config: RelayConfig) {
     // Start HTTP server
     HttpServer::new(move || {
         App::new()
+            .wrap(Cors::permissive())
             .app_data(app_state.clone())
             .route("/relay_tx", web::post().to(relay_tx))
             .route("/get_deposit_address", web::get().to(get_deposit_address))

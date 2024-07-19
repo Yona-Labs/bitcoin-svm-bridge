@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Yona-Bitcoin Bridge</title>
+    <style>
+        ._scene_1dwv1_1 {
+            position: absolute !important;
+            left: 0;
+            top: 0;
+            width: 100vw !important;
+            z-index: -1
+        }
+
+        ._container_54szi_1 {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            height: 55px
+        }
+
+        ._socials_54szi_8 {
+            width: 33%;
+            display: flex;
+            align-items: center
+        }
+
+        @media (max-width: 930px) {
+            ._socials_54szi_8 {
+                display: none
+            }
+        }
+
+        ._logo_54szi_19 {
+            display: flex
+        }
+
+        ._joinContainer_54szi_23 {
+            width: 33%;
+            display: flex;
+            align-items: center;
+            justify-content: flex-end
+        }
+
+        ._socialsItem_54szi_30 {
+            display: flex;
+            overflow: hidden;
+            cursor: pointer
+        }
+
+        ._socialsItem_54szi_30:hover {
+            border-radius: 5px;
+            background-color: #ff7a00
+        }
+
+        ._socialsItem_54szi_30:hover ._socialsItemBg_54szi_39 {
+            fill: #ff7a00
+        }
+
+        ._socialsItem_54szi_30:not(:last-child) {
+            margin-right: 20px
+        }
+
+        ._join_54szi_23 {
+            display: flex;
+            overflow: hidden;
+            cursor: pointer
+        }
+
+        ._join_54szi_23:hover {
+            border-radius: 5px
+        }
+
+        ._join_54szi_23:hover ._joinBg_54szi_54 {
+            fill: #ff7a00
+        }
+
+        ._join_54szi_23:hover ._joinHide_54szi_57 {
+            display: none
+        }
+
+        ._container_1fndx_1 {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            margin: 0 auto 50px
+        }
+
+        @media (min-width: 800px) {
+            ._container_1fndx_1 ._mobile_1fndx_9 {
+                display: none
+            }
+        }
+
+        @media (max-width: 800px) {
+            ._container_1fndx_1 ._desktop_1fndx_14 {
+                display: none
+            }
+        }
+
+        ._footer_j7pza_1 {
+            display: flex;
+            flex-direction: column;
+            align-items: center
+        }
+
+        ._container_j7pza_7 {
+            width: 100%;
+            color: #8b8b8b;
+            text-align: center;
+            font-family: SfCompactDisplay;
+            font-size: 16px;
+            font-style: normal;
+            font-weight: 350;
+            line-height: 120%;
+            letter-spacing: .48px;
+            text-transform: uppercase
+        }
+
+        ._socials_j7pza_21 {
+            display: flex;
+            align-items: center;
+            margin-bottom: 40px
+        }
+
+        @media (min-width: 930px) {
+            ._socials_j7pza_21 {
+                display: none
+            }
+        }
+
+        ._socialsItem_j7pza_32 {
+            display: flex;
+            overflow: hidden;
+            cursor: pointer
+        }
+
+        ._socialsItem_j7pza_32:hover {
+            border-radius: 5px;
+            background-color: #ff7a00
+        }
+
+        ._socialsItem_j7pza_32:hover ._socialsItemBg_j7pza_41 {
+            fill: #ff7a00
+        }
+
+        ._socialsItem_j7pza_32:not(:last-child) {
+            margin-right: 20px
+        }
+
+        @font-face {
+            font-family: Mondwest;
+            src: url(/fonts/Mondwest-Regular.woff2)
+        }
+
+        :root {
+            line-height: 1.5;
+            font-weight: 400;
+            color-scheme: light dark;
+            color: #ffffffde;
+            font-synthesis: none;
+            text-rendering: optimizeLegibility;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale
+        }
+
+        * {
+            box-sizing: border-box
+        }
+
+        @font-face {
+            font-family: SfCompactDisplay;
+            src: url(/fonts/SF-Compact-Display-Regular.woff)
+        }
+
+        @font-face {
+            font-family: SfCompactDisplayMedium;
+            src: url(/fonts/SF-UI-Display-Medium.woff)
+        }
+
+        @font-face {
+            font-family: Minecraftia;
+            src: url(/fonts/Minecraftia.ttf)
+        }
+
+        body {
+            margin: 0;
+            min-height: 100vh;
+            background-color: #000;
+            font-family: SfCompactDisplay;
+            color: #fff;
+            display: flex;
+            justify-content: center;
+            align-items: center
+        }
+
+        /* Additional styles for the forms */
+        .container {
+            width: 50vw;
+            max-width: 600px;
+            padding: 2em;
+            background-color: #1a1a1a;
+            border-radius: 10px;
+            box-shadow: 0 0 10px rgba(255, 255, 255, 0.1);
+        }
+
+        h1 {
+            text-align: center;
+            margin-bottom: 1em;
+        }
+
+        form {
+            margin-bottom: 2em;
+        }
+
+        input, button {
+            display: block;
+            width: 100%;
+            margin: 0.5em 0;
+            padding: 0.5em;
+            border: none;
+            border-radius: 5px;
+        }
+
+        input {
+            background-color: #333;
+            color: #fff;
+        }
+
+        button {
+            background-color: #ff7a00;
+            color: white;
+            cursor: pointer;
+            transition: background-color 0.3s ease;
+        }
+
+        button:hover {
+            background-color: #ff9933;
+        }
+
+        #depositResult, #relayResult {
+            margin-top: 1em;
+            padding: 1em;
+            background-color: #333;
+            border-radius: 5px;
+            text-align: center;
+        }
+    </style>
+</head>
+<body>
+<div class="container">
+    <h1>Yona-Bitcoin Bridge</h1>
+
+    <form id="depositForm">
+        <h2>Generate Deposit Address</h2>
+        <input type="text" id="yonaAddress" placeholder="Enter Yona Address" required>
+        <button type="submit">Generate Deposit Address</button>
+    </form>
+    <div id="depositResult"></div>
+
+    <form id="relayForm">
+        <h2>Relay Transaction</h2>
+        <input type="text" id="relayAddress" placeholder="Enter Yona Address" required>
+        <input type="text" id="bitcoinTxId" placeholder="Enter Bitcoin Transaction ID" required>
+        <button type="submit">Submit</button>
+    </form>
+    <div id="relayResult"></div>
+</div>
+
+<script>
+    document.getElementById('depositForm').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const yonaAddress = document.getElementById('yonaAddress').value;
+
+        try {
+            const response = await fetch(`http://139.59.156.238:8199/get_deposit_address?yona_address=${encodeURIComponent(yonaAddress)}`);
+            const data = await response.json();
+
+            if (data.bitcoin_address) {
+                document.getElementById('depositResult').innerHTML = `Generated Bitcoin Address: ${data.bitcoin_address}`;
+            } else {
+                document.getElementById('depositResult').innerHTML = `Error: Unable to generate Bitcoin address`;
+            }
+        } catch (error) {
+            document.getElementById('depositResult').innerHTML = `Error: ${error.message}`;
+        }
+    });
+
+    document.getElementById('relayForm').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const yonaAddress = document.getElementById('relayAddress').value;
+        const txId = document.getElementById('bitcoinTxId').value;
+
+        try {
+            const response = await fetch('http://139.59.156.238:8199/relay_tx', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    tx_id: txId,
+                    yona_address: yonaAddress
+                })
+            });
+
+            const result = await response.json();
+            document.getElementById('relayResult').innerHTML = `Response: ${JSON.stringify(result)}`;
+        } catch (error) {
+            document.getElementById('relayResult').innerHTML = `Error: ${error.message}`;
+        }
+    });
+</script>
+</body>
+</html>
