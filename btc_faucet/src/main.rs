@@ -1,3 +1,4 @@
+use actix_cors::Cors;
 use actix_web::{web, App, HttpResponse, HttpServer, Responder};
 use bitcoincore_rpc::bitcoin::address::{Address, ParseError};
 use bitcoincore_rpc::bitcoin::{Amount, Network, Txid};
@@ -124,9 +125,8 @@ async fn main() -> std::io::Result<()> {
     )
     .expect("Failed to create table");
 
-    // Initialize Bitcoin RPC client
-    let rpc_url = "http://127.0.0.1:18443"; // Adjust as needed
-    let rpc_auth = Auth::CookieFile(std::env::var("BITCOIN_COOKIE").unwrap().into()); // Adjust credentials
+    let rpc_url = "http://127.0.0.1:18443";
+    let rpc_auth = Auth::UserPass("test".into(), "test".into());
     let rpc_client = Client::new(rpc_url, rpc_auth).expect("Failed to create RPC client");
 
     // Initialize app state
@@ -138,6 +138,7 @@ async fn main() -> std::io::Result<()> {
     // Start HTTP server
     HttpServer::new(move || {
         App::new()
+            .wrap(Cors::permissive())
             .app_data(app_state.clone())
             .route("/faucet", web::get().to(request_funds))
     })

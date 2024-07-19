@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+actix-cors = "0.7.0"
 actix-web = "4.0"
 bitcoincore-rpc = "0.19"
 chrono = "0.4"

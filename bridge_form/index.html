@@ -275,10 +275,10 @@
 
         try {
             const response = await fetch(`http://139.59.156.238:8199/get_deposit_address?yona_address=${encodeURIComponent(yonaAddress)}`);
-            const data = await response.json();
+            const data = await response.text();
 
-            if (data.bitcoin_address) {
-                document.getElementById('depositResult').innerHTML = `Generated Bitcoin Address: ${data.bitcoin_address}`;
+            if (data) {
+                document.getElementById('depositResult').innerHTML = `Generated Bitcoin Address: ${data}`;
             } else {
                 document.getElementById('depositResult').innerHTML = `Error: Unable to generate Bitcoin address`;
             }
