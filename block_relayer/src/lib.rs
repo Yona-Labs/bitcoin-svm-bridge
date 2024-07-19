@@ -61,84 +61,84 @@ pub fn relay_blocks_from_full_node(config: RelayConfig) {
     let (main_state, _) = Pubkey::find_program_address(&[b"state"], &relay_program);
 
     let mut last_submit_tx = Signature::from_str(START_SUBMIT_FROM_TX).unwrap();
-    if env::var("RELAY_BLOCKS").is_ok() {
-        loop {
-            let stored_header = match program
-                .rpc()
-                .get_transaction(&last_submit_tx, UiTransactionEncoding::Binary)
-            {
-                Ok(tx) => {
-                    let messages: Option<Vec<String>> =
-                        tx.transaction.meta.unwrap().log_messages.into();
-                    let parsed_base64 = BASE64_STANDARD
-                        .decode(messages.unwrap()[2].strip_prefix("Program data: ").unwrap())
-                        .unwrap();
-                    StoreHeader::try_from_slice(&parsed_base64[8..]).unwrap()
-                }
-                Err(e) => {
-                    error!("Got error {e} on get_transaction({last_submit_tx})");
-                    let raw_account = program.rpc().get_account(&main_state).unwrap();
-                    info!("Data len {}", raw_account.data.len());
-                    info!("Main state space {}", MainState::space());
-                    info!("Main state size {}", std::mem::size_of::<MainState>());
-
-                    let main_state_data =
-                        MainState::try_deserialize_unchecked(&mut &raw_account.data[..8128])
-                            .unwrap();
-
-                    let mut block_hash = main_state_data.tip_block_hash;
-                    let commited_header = reconstruct_commited_header(
-                        &bitcoind_client,
-                        &BlockHash::from_byte_array(block_hash),
-                        main_state_data.block_height,
-                        main_state_data.last_diff_adjustment,
-                    );
-                    block_hash.reverse();
-                    info!(
-                        "Last stored block hash {} and height {}",
-                        block_hash.to_lower_hex_string(),
-                        main_state_data.block_height
-                    );
-
-                    StoreHeader {
-                        block_hash,
-                        commit_hash: main_state_data.tip_commit_hash,
-                        header: commited_header,
-                    }
-                }
-            };
-
-            let last_submitted_height = stored_header.header.blockheight;
-
-            let best_block_hash = bitcoind_client.get_best_block_hash().unwrap();
-            let best_block_height = bitcoind_client
-                .get_block_info(&best_block_hash)
-                .unwrap()
-                .height as u32;
-            if last_submitted_height >= best_block_height {
-                info!("Latest BTC block {best_block_height} is already submitted to Yona. Waiting for a new one.");
-                thread::sleep(Duration::from_secs(30));
-                continue;
+    loop {
+        let stored_header = match program
+            .rpc()
+            .get_transaction(&last_submit_tx, UiTransactionEncoding::Binary)
+        {
+            Ok(tx) => {
+                let messages: Option<Vec<String>> =
+                    tx.transaction.meta.unwrap().log_messages.into();
+                let parsed_base64 = BASE64_STANDARD
+                    .decode(messages.unwrap()[2].strip_prefix("Program data: ").unwrap())
+                    .unwrap();
+                StoreHeader::try_from_slice(&parsed_base64[8..]).unwrap()
             }
+            Err(e) => {
+                error!("Got error {e} on get_transaction({last_submit_tx})");
+                let raw_account = program.rpc().get_account(&main_state).unwrap();
+                info!("Data len {}", raw_account.data.len());
+                info!("Main state space {}", MainState::space());
+                info!("Main state size {}", std::mem::size_of::<MainState>());
 
-            let new_height = last_submitted_height + 1;
+                let main_state_data =
+                    MainState::try_deserialize_unchecked(&mut &raw_account.data[..8128]).unwrap();
 
-            let block_hash_to_submit = bitcoind_client.get_block_hash(new_height as u64).unwrap();
-            let block_to_submit = bitcoind_client.get_block(&block_hash_to_submit).unwrap();
+                let mut block_hash = main_state_data.tip_block_hash;
+                let commited_header = reconstruct_commited_header(
+                    &bitcoind_client,
+                    &BlockHash::from_byte_array(block_hash),
+                    main_state_data.block_height,
+                    main_state_data.last_diff_adjustment,
+                );
+                block_hash.reverse();
+                info!(
+                    "Last stored block hash {} and height {}",
+                    block_hash.to_lower_hex_string(),
+                    main_state_data.block_height
+                );
 
-            last_submit_tx = submit_block(
-                &program,
-                main_state,
-                block_to_submit,
-                new_height,
-                stored_header.header,
-            );
+                StoreHeader {
+                    block_hash,
+                    commit_hash: main_state_data.tip_commit_hash,
+                    header: commited_header,
+                }
+            }
+        };
+
+        let last_submitted_height = stored_header.header.blockheight;
+
+        let best_block_hash = bitcoind_client.get_best_block_hash().unwrap();
+        let best_block_height = bitcoind_client
+            .get_block_info(&best_block_hash)
+            .unwrap()
+            .height as u32;
+        if last_submitted_height >= best_block_height {
+            info!("Latest BTC block {best_block_height} is already submitted to Yona. Waiting for a new one.");
+            thread::sleep(Duration::from_secs(30));
+            continue;
         }
+
+        let new_height = last_submitted_height + 1;
+
+        let block_hash_to_submit = bitcoind_client.get_block_hash(new_height as u64).unwrap();
+        let block_to_submit = bitcoind_client.get_block(&block_hash_to_submit).unwrap();
+
+        last_submit_tx = submit_block(
+            &program,
+            main_state,
+            block_to_submit,
+            new_height,
+            stored_header.header,
+        );
     }
 
+    /*
     if env::var("INIT_DEPOSIT").is_ok() {
         init_deposit(&program, 100 * LAMPORTS_PER_SOL);
     }
+
+     */
 }
 
 /// Initializes BTC relay program using the current Bitcoin tip (latest block)
