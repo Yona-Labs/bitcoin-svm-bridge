@@ -1,6 +1,7 @@
 use anchor_client::anchor_lang::prelude::AccountMeta;
 use anchor_client::solana_sdk::pubkey::Pubkey;
 use anchor_client::solana_sdk::signature::{Keypair, Signature};
+use anchor_client::ClientError as AnchorClientError;
 use anchor_client::Program;
 use bitcoin::hashes::Hash;
 use bitcoin::hex::DisplayHex;
@@ -66,14 +67,11 @@ pub(crate) fn init_deposit(program: &Program<Arc<Keypair>>, amount: u64) {
     info!("Deposit tx sig {res}");
 }
 
-#[derive(Debug)]
-pub enum InitError {}
-
 pub fn init_program(
     program: &Program<Arc<Keypair>>,
     block: Block,
     block_height: u32,
-) -> Result<Signature, InitError> {
+) -> Result<Signature, AnchorClientError> {
     let (main_state, _) = Pubkey::find_program_address(&[b"state"], &program.id());
 
     let yona_block_header = BlockHeader {
@@ -85,7 +83,7 @@ pub fn init_program(
         nonce: block.header.nonce,
     };
 
-    let block_hash = yona_block_header.get_block_hash().unwrap();
+    let block_hash = yona_block_header.get_block_hash()?;
 
     let (header_topic, _) =
         Pubkey::find_program_address(&[b"header", block_hash.as_slice()], &program.id());
@@ -105,8 +103,7 @@ pub fn init_program(
             last_diff_adjustment: yona_block_header.timestamp,
             prev_block_timestamps: [yona_block_header.timestamp; 10],
         })
-        .send()
-        .unwrap();
+        .send()?;
 
     info!(
         "Submitted block {}, tx sig {res}",
@@ -122,7 +119,7 @@ pub(crate) fn submit_block(
     block: Block,
     height: u32,
     commited_header: CommittedBlockHeader,
-) -> Signature {
+) -> Result<Signature, AnchorClientError> {
     let yona_block_header = BlockHeader {
         version: block.header.version.to_consensus() as u32,
         reversed_prev_blockhash: block.header.prev_blockhash.to_byte_array(),
@@ -132,7 +129,7 @@ pub(crate) fn submit_block(
         nonce: block.header.nonce,
     };
 
-    let mut block_hash = yona_block_header.get_block_hash().unwrap();
+    let mut block_hash = yona_block_header.get_block_hash()?;
     let (header_topic, _) =
         Pubkey::find_program_address(&[b"header", block_hash.as_slice()], &program.id());
 
@@ -149,8 +146,7 @@ pub(crate) fn submit_block(
             data: vec![yona_block_header],
             commited_header,
         })
-        .send()
-        .unwrap();
+        .send()?;
 
     block_hash.reverse();
     info!(
@@ -158,5 +154,5 @@ pub(crate) fn submit_block(
         block_hash.to_lower_hex_string()
     );
 
-    res
+    Ok(res)
 }

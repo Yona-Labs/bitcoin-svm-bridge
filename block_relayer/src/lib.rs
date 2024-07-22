@@ -5,7 +5,7 @@ mod relay_program_interaction;
 use crate::config::RelayConfig;
 use crate::merkle::Proof;
 use crate::relay_program_interaction::{
-    init_deposit, init_program, reconstruct_commited_header, submit_block, InitError,
+    init_deposit, init_program, reconstruct_commited_header, submit_block,
 };
 use actix_cors::Cors;
 use actix_web::{web, App, HttpResponse, HttpServer, Responder};
@@ -14,13 +14,13 @@ use anchor_client::solana_sdk::commitment_config::CommitmentConfig;
 use anchor_client::solana_sdk::native_token::LAMPORTS_PER_SOL;
 use anchor_client::solana_sdk::pubkey::Pubkey;
 use anchor_client::solana_sdk::signature::{read_keypair_file, Keypair, Signature};
-use anchor_client::{Client as AnchorClient, Cluster, Program};
+use anchor_client::{Client as AnchorClient, ClientError as AnchorClientError, Cluster, Program};
 use base64::prelude::BASE64_STANDARD;
 use base64::Engine;
 use bitcoin::hashes::Hash;
 use bitcoin::hex::DisplayHex;
 use bitcoin::{Address, BlockHash, Network, PublicKey, Txid};
-use bitcoincore_rpc::{Client as BitcoinRpcClient, RpcApi};
+use bitcoincore_rpc::{Client as BitcoinRpcClient, Error as BtcError, RpcApi};
 use btc_relay::accounts::VerifyTransaction;
 use btc_relay::events::StoreHeader;
 use btc_relay::instruction::VerifySmallTx as VerifySmallTxInstruction;
@@ -125,13 +125,20 @@ pub fn relay_blocks_from_full_node(config: RelayConfig) {
         let block_hash_to_submit = bitcoind_client.get_block_hash(new_height as u64).unwrap();
         let block_to_submit = bitcoind_client.get_block(&block_hash_to_submit).unwrap();
 
-        last_submit_tx = submit_block(
+        last_submit_tx = match submit_block(
             &program,
             main_state,
             block_to_submit,
             new_height,
             stored_header.header,
-        );
+        ) {
+            Ok(sig) => sig,
+            Err(e) => {
+                error!("Error {e} on block submit attempt");
+                thread::sleep(Duration::from_secs(10));
+                continue;
+            }
+        }
     }
 
     /*
@@ -142,23 +149,40 @@ pub fn relay_blocks_from_full_node(config: RelayConfig) {
      */
 }
 
+#[derive(Debug)]
+pub enum InitProgramError {
+    Anchor(AnchorClientError),
+    Bitcoin(BtcError),
+}
+
+impl From<AnchorClientError> for InitProgramError {
+    fn from(error: AnchorClientError) -> Self {
+        InitProgramError::Anchor(error)
+    }
+}
+
+impl From<BtcError> for InitProgramError {
+    fn from(error: BtcError) -> Self {
+        InitProgramError::Bitcoin(error)
+    }
+}
+
 /// Initializes BTC relay program using the current Bitcoin tip (latest block)
-pub fn run_init_program(config: RelayConfig) -> Result<Signature, InitError> {
+pub fn run_init_program(config: RelayConfig) -> Result<Signature, InitProgramError> {
     let yona_client = get_yona_client(&config);
 
-    let bitcoind_client =
-        BitcoinRpcClient::new(&config.bitcoind_url, config.bitcoin_auth.into()).unwrap();
+    let bitcoind_client = BitcoinRpcClient::new(&config.bitcoind_url, config.bitcoin_auth.into())?;
 
     let relay_program = BtcRelay::id();
-    let program = yona_client.program(relay_program).unwrap();
+    let program = yona_client.program(relay_program)?;
 
-    let tip = bitcoind_client.get_chain_tips().unwrap().remove(0);
+    let tip = bitcoind_client.get_chain_tips()?.remove(0);
     debug!("Current bitcoin tip {tip:?}");
 
     let last_block = bitcoind_client.get_block(&tip.hash).unwrap();
     debug!("Bitcoin last block {last_block:?}");
 
-    init_program(&program, last_block, tip.height as u32)
+    Ok(init_program(&program, last_block, tip.height as u32)?)
 }
 
 struct RelayTransactionsState {
