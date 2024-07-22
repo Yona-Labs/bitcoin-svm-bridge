@@ -148,7 +148,7 @@
             });
 
             const result = await response.json();
-            document.getElementById('relayResult').innerHTML = `Response: ${JSON.stringify(result)}`;
+            document.getElementById('relayResult').innerHTML = `${JSON.stringify(result)}`;
         } catch (error) {
             document.getElementById('relayResult').innerHTML = `Error: ${error.message}`;
         }
