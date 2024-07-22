@@ -3,15 +3,13 @@ mod merkle;
 mod relay_program_interaction;
 
 use crate::config::RelayConfig;
-use crate::merkle::Proof;
 use crate::relay_program_interaction::{
-    init_deposit, init_program, reconstruct_commited_header, submit_block,
+    init_program, reconstruct_commited_header, relay_tx, submit_block,
 };
 use actix_cors::Cors;
 use actix_web::{web, App, HttpResponse, HttpServer, Responder};
 use anchor_client::anchor_lang::{AccountDeserialize, AnchorDeserialize, Id};
 use anchor_client::solana_sdk::commitment_config::CommitmentConfig;
-use anchor_client::solana_sdk::native_token::LAMPORTS_PER_SOL;
 use anchor_client::solana_sdk::pubkey::Pubkey;
 use anchor_client::solana_sdk::signature::{read_keypair_file, Keypair, Signature};
 use anchor_client::{Client as AnchorClient, ClientError as AnchorClientError, Cluster, Program};
@@ -21,9 +19,7 @@ use bitcoin::hashes::Hash;
 use bitcoin::hex::DisplayHex;
 use bitcoin::{Address, BlockHash, Network, PublicKey, Txid};
 use bitcoincore_rpc::{Client as BitcoinRpcClient, Error as BtcError, RpcApi};
-use btc_relay::accounts::VerifyTransaction;
 use btc_relay::events::StoreHeader;
-use btc_relay::instruction::VerifySmallTx as VerifySmallTxInstruction;
 use btc_relay::program::BtcRelay;
 use btc_relay::state::MainState;
 use btc_relay::utils::{bridge_deposit_script, BITCOIN_DEPOSIT_PUBKEY};
@@ -86,12 +82,19 @@ pub fn relay_blocks_from_full_node(config: RelayConfig) {
                     MainState::try_deserialize_unchecked(&mut &raw_account.data[..8128]).unwrap();
 
                 let mut block_hash = main_state_data.tip_block_hash;
-                let commited_header = reconstruct_commited_header(
+                let commited_header = match reconstruct_commited_header(
                     &bitcoind_client,
                     &BlockHash::from_byte_array(block_hash),
                     main_state_data.block_height,
                     main_state_data.last_diff_adjustment,
-                );
+                ) {
+                    Ok(header) => header,
+                    Err(e) => {
+                        error!("Error {e} on reconstruct_commited_header");
+                        thread::sleep(Duration::from_secs(10));
+                        continue;
+                    }
+                };
                 block_hash.reverse();
                 info!(
                     "Last stored block hash {} and height {}",
@@ -197,7 +200,7 @@ struct RelayTxRequest {
     yona_address: String,
 }
 
-async fn relay_tx(
+async fn relay_tx_web_api(
     data: web::Data<RelayTransactionsState>,
     req: web::Json<RelayTxRequest>,
 ) -> impl Responder {
@@ -210,112 +213,27 @@ async fn relay_tx(
         Err(_) => return HttpResponse::BadRequest().body("yona_address is not valid"),
     };
 
-    let raw_account = spawn_blocking({
-        let data = data.clone();
-        move || data.relay_program.rpc().get_account(&data.main_state)
+    let relay_tx_res = spawn_blocking(move || {
+        relay_tx(
+            &data.relay_program,
+            data.main_state,
+            &data.bitcoin_rpc_client,
+            tx_id,
+            mint_receiver,
+        )
     })
     .await
-    .unwrap()
-    .unwrap();
+    .expect("relay_tx to not panic");
 
-    let main_state_data =
-        MainState::try_deserialize_unchecked(&mut &raw_account.data[..8128]).unwrap();
-
-    let transaction = match spawn_blocking({
-        let data = data.clone();
-        move || {
-            data.bitcoin_rpc_client
-                .get_raw_transaction_info(&tx_id, None)
-        }
-    })
-    .await
-    .unwrap()
-    {
-        Ok(tx) => tx,
+    match relay_tx_res {
+        Ok(sig) => HttpResponse::Ok().json(format!("Relayed bitcoin tx {} to Yona: {sig}", tx_id)),
         Err(e) => {
-            error!("Could not get tx {} info {e}", req.tx_id);
-            return HttpResponse::InternalServerError().body("Could not get tx info");
+            error!("{e:?}");
+            HttpResponse::InternalServerError().body("Failed to relay bitcoin tx")
         }
-    };
-
-    let hash = match transaction.blockhash {
-        Some(hash) => hash,
-        _ => {
-            return HttpResponse::BadRequest()
-                .body(format!("Transaction {tx_id} is not included to block yet"));
-        }
-    };
-
-    let block_info = spawn_blocking({
-        let data = data.clone();
-        move || data.bitcoin_rpc_client.get_block_info(&hash)
-    })
-    .await
-    .unwrap()
-    .unwrap();
-
-    let commited_header = spawn_blocking({
-        let data = data.clone();
-        move || {
-            reconstruct_commited_header(
-                &data.bitcoin_rpc_client,
-                &hash,
-                block_info.height as u32,
-                main_state_data.last_diff_adjustment,
-            )
-        }
-    })
-    .await
-    .unwrap();
-
-    let tx_pos = block_info
-        .tx
-        .iter()
-        .position(|in_block| *in_block == tx_id)
-        .unwrap();
-    let proof = Proof::create(&block_info.tx, tx_pos);
-
-    let (deposit_account, _) =
-        Pubkey::find_program_address(&[b"solana_deposit"], &data.relay_program.id());
-
-    let relay_yona_tx_res = spawn_blocking({
-        let data = data.clone();
-        move || {
-            data.relay_program
-                .request()
-                .accounts(VerifyTransaction {
-                    signer: data.relay_program.payer(),
-                    main_state: data.main_state,
-                    deposit_account,
-                    // Pubkey::from_str("CgxQmREYVuwyPzHcH19iBQDtPjcHEWuzfRgWrtzepHLs").unwrap()
-                    mint_receiver,
-                })
-                .args(VerifySmallTxInstruction {
-                    tx_bytes: transaction.hex,
-                    confirmations: 1,
-                    tx_index: tx_pos as u32,
-                    commited_header,
-                    reversed_merkle_proof: proof.to_reversed_vec(),
-                })
-                .send()
-        }
-    })
-    .await
-    .unwrap();
-
-    let relay_yona_tx = match relay_yona_tx_res {
-        Ok(sig) => sig,
-        Err(e) => {
-            error!("Transaction {} relay failed {e:?}", req.tx_id);
-            return HttpResponse::InternalServerError().json("Failed to relay tx to Yona program");
-        }
-    };
-
-    HttpResponse::Ok().json(format!(
-        "Relayed bitcoin tx {} to Yona: {relay_yona_tx}",
-        tx_id
-    ))
+    }
 }
+
 #[derive(Deserialize)]
 struct GetDepositAddrReq {
     yona_address: String,
@@ -362,7 +280,7 @@ pub async fn relay_transactions(config: RelayConfig) {
         App::new()
             .wrap(Cors::permissive())
             .app_data(app_state.clone())
-            .route("/relay_tx", web::post().to(relay_tx))
+            .route("/relay_tx", web::post().to(relay_tx_web_api))
             .route("/get_deposit_address", web::get().to(get_deposit_address))
     })
     .bind("0.0.0.0:8199")
