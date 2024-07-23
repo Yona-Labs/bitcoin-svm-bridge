@@ -22,12 +22,12 @@ struct RelayerCli {
 fn main() {
     env_logger::init();
     let cli = RelayerCli::parse();
-    let config = read_config().unwrap();
+    let config = read_config().expect("Could not read config file");
 
     match cli.command {
         RelayerCommand::InitDeposit => unimplemented!(),
         RelayerCommand::InitProgram => {
-            let result = run_init_program(config).unwrap();
+            let result = run_init_program(config).expect("Relay program initialization failed");
             println!("Initialization tx signature {}", result);
         }
         RelayerCommand::RelayBlocks => relay_blocks_from_full_node(config),

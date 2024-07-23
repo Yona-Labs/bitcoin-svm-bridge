@@ -29,94 +29,108 @@ use solana_transaction_status::UiTransactionEncoding;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
-use std::{env, thread};
+use std::{env, error, thread};
 use tokio::task::spawn_blocking;
 
-const START_SUBMIT_FROM_TX: &str =
-    "HGmcAboCdFVvPqqebE8KRR288bmooHEed9KMtkEe2cy4fKuySHqQ5nz2LAkwWVH65miUJ7HdvgRFvaADGmW3fdZ";
-
-fn get_yona_client(config: &RelayConfig) -> AnchorClient<Arc<Keypair>> {
-    let mut keypair_path = env::home_dir().unwrap();
+fn get_yona_client(
+    config: &RelayConfig,
+) -> Result<AnchorClient<Arc<Keypair>>, Box<dyn error::Error>> {
+    let mut keypair_path = env::home_dir().expect("to get the home dir");
     keypair_path.push(&config.yona_keipair);
     // Set up sender and recipient keypairs
-    let sender = read_keypair_file(keypair_path).unwrap();
+    let sender = read_keypair_file(keypair_path)?;
 
     let signer = Arc::new(sender);
     let cluster = Cluster::Custom(config.yona_http.clone(), config.yona_ws.clone());
-    AnchorClient::new_with_options(cluster, signer, CommitmentConfig::confirmed())
+    Ok(AnchorClient::new_with_options(
+        cluster,
+        signer,
+        CommitmentConfig::confirmed(),
+    ))
 }
 
 pub fn relay_blocks_from_full_node(config: RelayConfig) {
-    let yona_client = get_yona_client(&config);
+    let yona_client = get_yona_client(&config).expect("Couldn't create Yona client");
 
-    let bitcoind_client =
-        BitcoinRpcClient::new(&config.bitcoind_url, config.bitcoin_auth.into()).unwrap();
+    let bitcoind_client = BitcoinRpcClient::new(&config.bitcoind_url, config.bitcoin_auth.into())
+        .expect("Couldn't create Bitcoin client");
 
     let relay_program = BtcRelay::id();
-    let program = yona_client.program(relay_program).unwrap();
+    let program = yona_client
+        .program(relay_program)
+        .expect("Couldn't create relay program instance");
 
     let (main_state, _) = Pubkey::find_program_address(&[b"state"], &relay_program);
 
-    let mut last_submit_tx = Signature::from_str(START_SUBMIT_FROM_TX).unwrap();
     loop {
-        let stored_header = match program
-            .rpc()
-            .get_transaction(&last_submit_tx, UiTransactionEncoding::Binary)
-        {
-            Ok(tx) => {
-                let messages: Option<Vec<String>> =
-                    tx.transaction.meta.unwrap().log_messages.into();
-                let parsed_base64 = BASE64_STANDARD
-                    .decode(messages.unwrap()[2].strip_prefix("Program data: ").unwrap())
-                    .unwrap();
-                StoreHeader::try_from_slice(&parsed_base64[8..]).unwrap()
-            }
+        let raw_account = match program.rpc().get_account(&main_state) {
+            Ok(acc) => acc,
             Err(e) => {
-                error!("Got error {e} on get_transaction({last_submit_tx})");
-                let raw_account = program.rpc().get_account(&main_state).unwrap();
-                info!("Data len {}", raw_account.data.len());
-                info!("Main state space {}", MainState::space());
-                info!("Main state size {}", std::mem::size_of::<MainState>());
-
-                let main_state_data =
-                    MainState::try_deserialize_unchecked(&mut &raw_account.data[..8128]).unwrap();
-
-                let mut block_hash = main_state_data.tip_block_hash;
-                let commited_header = match reconstruct_commited_header(
-                    &bitcoind_client,
-                    &BlockHash::from_byte_array(block_hash),
-                    main_state_data.block_height,
-                    main_state_data.last_diff_adjustment,
-                ) {
-                    Ok(header) => header,
-                    Err(e) => {
-                        error!("Error {e} on reconstruct_commited_header");
-                        thread::sleep(Duration::from_secs(10));
-                        continue;
-                    }
-                };
-                block_hash.reverse();
-                info!(
-                    "Last stored block hash {} and height {}",
-                    block_hash.to_lower_hex_string(),
-                    main_state_data.block_height
-                );
-
-                StoreHeader {
-                    block_hash,
-                    commit_hash: main_state_data.tip_commit_hash,
-                    header: commited_header,
-                }
+                error!("Error {e} on get_account(main_state)");
+                thread::sleep(Duration::from_secs(10));
+                continue;
             }
+        };
+
+        // TODO there seems to be an allocation of 8 unneeded bytes, which makes deserialization fail
+        let main_state_data =
+            match MainState::try_deserialize_unchecked(&mut &raw_account.data[..8128]) {
+                Ok(data) => data,
+                Err(e) => {
+                    error!("Error {e} on main_state deserialization attempt");
+                    thread::sleep(Duration::from_secs(10));
+                    continue;
+                }
+            };
+
+        let mut block_hash = main_state_data.tip_block_hash;
+        let commited_header = match reconstruct_commited_header(
+            &bitcoind_client,
+            &BlockHash::from_byte_array(block_hash),
+            main_state_data.block_height,
+            main_state_data.last_diff_adjustment,
+        ) {
+            Ok(header) => header,
+            Err(e) => {
+                error!("Error {e} on reconstruct_commited_header");
+                thread::sleep(Duration::from_secs(10));
+                continue;
+            }
+        };
+        block_hash.reverse();
+
+        info!(
+            "Last stored block hash {} and height {}",
+            block_hash.to_lower_hex_string(),
+            main_state_data.block_height
+        );
+
+        let stored_header = StoreHeader {
+            block_hash,
+            commit_hash: main_state_data.tip_commit_hash,
+            header: commited_header,
         };
 
         let last_submitted_height = stored_header.header.blockheight;
 
-        let best_block_hash = bitcoind_client.get_best_block_hash().unwrap();
-        let best_block_height = bitcoind_client
-            .get_block_info(&best_block_hash)
-            .unwrap()
-            .height as u32;
+        let best_block_hash = match bitcoind_client.get_best_block_hash() {
+            Ok(hash) => hash,
+            Err(e) => {
+                error!("Error {e} on Bitcoin's get_best_block_hash");
+                thread::sleep(Duration::from_secs(10));
+                continue;
+            }
+        };
+
+        let best_block_height = match bitcoind_client.get_block_info(&best_block_hash) {
+            Ok(info) => info.height as u32,
+            Err(e) => {
+                error!("Error {e} on Bitcoin's get_block_info({best_block_hash:02x})");
+                thread::sleep(Duration::from_secs(10));
+                continue;
+            }
+        };
+
         if last_submitted_height >= best_block_height {
             info!("Latest BTC block {best_block_height} is already submitted to Yona. Waiting for a new one.");
             thread::sleep(Duration::from_secs(30));
@@ -125,22 +139,34 @@ pub fn relay_blocks_from_full_node(config: RelayConfig) {
 
         let new_height = last_submitted_height + 1;
 
-        let block_hash_to_submit = bitcoind_client.get_block_hash(new_height as u64).unwrap();
-        let block_to_submit = bitcoind_client.get_block(&block_hash_to_submit).unwrap();
+        let block_hash_to_submit = match bitcoind_client.get_block_hash(new_height as u64) {
+            Ok(hash) => hash,
+            Err(e) => {
+                error!("Error {e} on Bitcoin's get_block_hash({new_height})");
+                thread::sleep(Duration::from_secs(10));
+                continue;
+            }
+        };
 
-        last_submit_tx = match submit_block(
+        let block_to_submit = match bitcoind_client.get_block(&block_hash_to_submit) {
+            Ok(block) => block,
+            Err(e) => {
+                error!("Error {e} on Bitcoin's get_block({block_hash_to_submit:02x})");
+                thread::sleep(Duration::from_secs(10));
+                continue;
+            }
+        };
+
+        if let Err(e) = submit_block(
             &program,
             main_state,
             block_to_submit,
             new_height,
             stored_header.header,
         ) {
-            Ok(sig) => sig,
-            Err(e) => {
-                error!("Error {e} on block submit attempt");
-                thread::sleep(Duration::from_secs(10));
-                continue;
-            }
+            error!("Error {e} on block submit attempt");
+            thread::sleep(Duration::from_secs(10));
+            continue;
         }
     }
 
@@ -156,6 +182,7 @@ pub fn relay_blocks_from_full_node(config: RelayConfig) {
 pub enum InitProgramError {
     Anchor(AnchorClientError),
     Bitcoin(BtcError),
+    CouldNotInitYonaClient(Box<dyn error::Error>),
 }
 
 impl From<AnchorClientError> for InitProgramError {
@@ -172,7 +199,7 @@ impl From<BtcError> for InitProgramError {
 
 /// Initializes BTC relay program using the current Bitcoin tip (latest block)
 pub fn run_init_program(config: RelayConfig) -> Result<Signature, InitProgramError> {
-    let yona_client = get_yona_client(&config);
+    let yona_client = get_yona_client(&config).map_err(InitProgramError::CouldNotInitYonaClient)?;
 
     let bitcoind_client = BitcoinRpcClient::new(&config.bitcoind_url, config.bitcoin_auth.into())?;
 
@@ -182,7 +209,7 @@ pub fn run_init_program(config: RelayConfig) -> Result<Signature, InitProgramErr
     let tip = bitcoind_client.get_chain_tips()?.remove(0);
     debug!("Current bitcoin tip {tip:?}");
 
-    let last_block = bitcoind_client.get_block(&tip.hash).unwrap();
+    let last_block = bitcoind_client.get_block(&tip.hash)?;
     debug!("Bitcoin last block {last_block:?}");
 
     Ok(init_program(&program, last_block, tip.height as u32)?)
@@ -245,7 +272,8 @@ async fn get_deposit_address(req: web::Query<GetDepositAddrReq>) -> impl Respond
         Err(_) => return HttpResponse::BadRequest().body("yona_address is not valid"),
     };
 
-    let bitcoin_pubkey = PublicKey::from_str(BITCOIN_DEPOSIT_PUBKEY).unwrap();
+    let bitcoin_pubkey =
+        PublicKey::from_str(BITCOIN_DEPOSIT_PUBKEY).expect("Valid bitcoin public key");
 
     let script = bridge_deposit_script(
         yona_address.to_bytes(),
@@ -260,14 +288,17 @@ async fn get_deposit_address(req: web::Query<GetDepositAddrReq>) -> impl Respond
 }
 
 pub async fn relay_transactions(config: RelayConfig) {
-    let yona_client = get_yona_client(&config);
+    let yona_client = get_yona_client(&config).expect("Couldn't create Yona client");
 
     let bitcoin_rpc_client =
-        BitcoinRpcClient::new(&config.bitcoind_url, config.bitcoin_auth.into()).unwrap();
+        BitcoinRpcClient::new(&config.bitcoind_url, config.bitcoin_auth.into())
+            .expect("Couldn't create Bitcoin client");
 
     let relay_program = BtcRelay::id();
     let (main_state, _) = Pubkey::find_program_address(&[b"state"], &relay_program);
-    let relay_program = yona_client.program(relay_program).unwrap();
+    let relay_program = yona_client
+        .program(relay_program)
+        .expect("Couldn't create relay program instance");
 
     let app_state = web::Data::new(RelayTransactionsState {
         relay_program,
@@ -284,8 +315,8 @@ pub async fn relay_transactions(config: RelayConfig) {
             .route("/get_deposit_address", web::get().to(get_deposit_address))
     })
     .bind("0.0.0.0:8199")
-    .expect("bind to 0.0.0.0:8199")
+    .expect("Couldn't bind to 0.0.0.0:8199")
     .run()
     .await
-    .unwrap();
+    .expect("HTTP server hasn't gracefully stop");
 }

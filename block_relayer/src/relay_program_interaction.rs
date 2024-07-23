@@ -50,10 +50,13 @@ pub(crate) fn reconstruct_commited_header(
     })
 }
 
-pub(crate) fn init_deposit(program: &Program<Arc<Keypair>>, amount: u64) {
+pub(crate) fn init_deposit(
+    program: &Program<Arc<Keypair>>,
+    amount: u64,
+) -> Result<Signature, AnchorClientError> {
     let (deposit_account, _) = Pubkey::find_program_address(&[b"solana_deposit"], &program.id());
 
-    let res = program
+    program
         .request()
         .accounts(Deposit {
             user: program.payer(),
@@ -62,9 +65,6 @@ pub(crate) fn init_deposit(program: &Program<Arc<Keypair>>, amount: u64) {
         })
         .args(DepositInstruction { amount })
         .send()
-        .unwrap();
-
-    info!("Deposit tx sig {res}");
 }
 
 pub fn init_program(
