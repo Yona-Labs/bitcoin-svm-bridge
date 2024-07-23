@@ -16,5 +16,5 @@ sequenceDiagram
     TX relayer ->> Yona Relay Program: 8. Submit transaction with proof
     Yona Relay Program ->> User: 9. Send BTC on Yona to user's address
     Bridge Nodes ->> Yona Relay Program: 10. Watch over relayed transactions
-    Note over Bridge Nodes: Once new transaction is relayed, add bridge UTXO to the spendable set
+    Note over Bridge Nodes: Once new transaction is relayed,<br> add bridge UTXO(s) to the spendable set
 ```
