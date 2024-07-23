@@ -14,7 +14,7 @@ sequenceDiagram
     Bridge UI ->> TX relayer: 6. Send BTC transaction info
     Note over TX relayer: 7. Generate Merkle Proof
     TX relayer ->> Yona Relay Program: 8. Submit transaction with proof
-    Yona Relay Program ->> User: 9. Send BTC on Yona to user's address
+    Yona Relay Program ->> User: 9. Mint BTC on Yona to user's address
     Bridge Nodes ->> Yona Relay Program: 10. Watch over relayed transactions
     Note over Bridge Nodes: Once new transaction is relayed,<br> add bridge UTXO(s) to the spendable set
 ```
