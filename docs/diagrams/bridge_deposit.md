@@ -5,6 +5,7 @@ sequenceDiagram
     participant Bitcoin Network
     participant TX relayer
     participant Bridge Nodes
+    participant Block relayer
     participant Yona Relay Program
     User ->> Bridge UI: 1. Provide Solana address
     Note over Bridge UI: 2. Generate BTC<br/>deposit address
@@ -17,4 +18,6 @@ sequenceDiagram
     Yona Relay Program ->> User: 9. Mint BTC on Yona to user's address
     Bridge Nodes ->> Yona Relay Program: 10. Watch over relayed transactions
     Note over Bridge Nodes: Once new transaction is relayed,<br> add bridge UTXO(s) to the spendable set
+    Block relayer(s) ->> Bitcoin Network: Watch over new blocks
+    Block relayer(s) ->> Yona Relay Program: Submit block headers
 ```
