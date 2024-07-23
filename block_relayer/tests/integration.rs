@@ -4,7 +4,8 @@ use bollard::container::RemoveContainerOptions;
 use bollard::Docker;
 use once_cell::sync::Lazy;
 use std::path::PathBuf;
-use std::process::{Child, Command};
+use std::process::{Child, Command, Stdio};
+use std::sync::Mutex;
 use std::thread::sleep;
 use std::time::Duration;
 use testcontainers::core::wait::LogWaitStrategy;
@@ -18,7 +19,7 @@ const ESPLORA_CONTAINER: &str = "esplora_for_bridge_tests";
 struct TestCtx {
     docker: Docker,
     esplora_container: ContainerAsync<GenericImage>,
-    anchor_localnet_handle: Child,
+    anchor_localnet_handle: Mutex<Child>,
     current_dir: PathBuf,
 }
 
@@ -46,6 +47,9 @@ static TEST_CTX: Lazy<TestCtx> = Lazy::new(|| {
     let anchor_localnet_handle = Command::new("anchor")
         .arg("localnet")
         .current_dir(current_dir.join("../"))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .stdin(Stdio::piped())
         .spawn()
         .expect("spawn anchor localnet");
 
@@ -81,7 +85,7 @@ static TEST_CTX: Lazy<TestCtx> = Lazy::new(|| {
     TestCtx {
         docker,
         esplora_container,
-        anchor_localnet_handle,
+        anchor_localnet_handle: Mutex::new(anchor_localnet_handle),
         current_dir,
     }
 });
