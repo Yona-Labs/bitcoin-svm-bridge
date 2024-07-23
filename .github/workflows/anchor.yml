@@ -20,6 +20,8 @@ jobs:
         run: |
           apt-get update
           apt-get install gcc-multilib -y
+      - name: Set default toolchain
+        run: rustup default stable
       - name: Generate new keypair
         run: solana-keygen new --no-bip39-passphrase -s -o anchor.json
       - name: Check solana config
