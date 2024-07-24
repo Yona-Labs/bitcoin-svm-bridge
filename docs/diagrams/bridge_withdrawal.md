@@ -5,7 +5,7 @@ sequenceDiagram
     participant Yona Relay Program
     participant Bridge Nodes
     participant Bitcoin Network
-    User ->> Bridge UI: 1. Submit Bitcoin address
+    User ->> Bridge UI: 1. Submit Bitcoin address and burn amount
     Note over Bridge UI: Generate and sign burn transaction
     Bridge UI ->> Yona Relay Program: 2. Broadcast burn transaction
     Bridge Nodes ->> Yona Relay Program: 3. Monitor burn transaction
