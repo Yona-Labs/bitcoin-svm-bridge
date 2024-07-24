@@ -59,7 +59,7 @@ pub(crate) fn init_deposit(
     program
         .request()
         .accounts(Deposit {
-            user: program.payer(),
+            signer: program.payer(),
             deposit_account,
             system_program: anchor_client::solana_sdk::system_program::ID,
         })

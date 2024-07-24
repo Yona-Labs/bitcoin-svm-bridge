@@ -132,9 +132,9 @@ pub struct BlockHeight<'info> {
 pub struct Deposit<'info> {
     /// The user account initiating the deposit.
     #[account(mut)]
-    pub user: Signer<'info>,
+    pub signer: Signer<'info>,
     /// The program's account to receive the deposit. This should be a derived PDA (Program Derived Address).
-    #[account(init, seeds = [b"solana_deposit".as_ref()], bump, payer = user, space = 8 + 1)]
+    #[account(init, seeds = [b"solana_deposit".as_ref()], bump, payer = signer, space = 8 + 1)]
     pub deposit_account: AccountLoader<'info, DepositState>,
     pub system_program: Program<'info, System>,
 }
@@ -147,9 +147,9 @@ pub struct Deposit<'info> {
 pub struct InitBigTxVerify<'info> {
     /// The user account initiating the verification.
     #[account(mut)]
-    pub user: Signer<'info>,
+    pub signer: Signer<'info>,
     /// The program's account used to store transaction's data. This should be a derived PDA (Program Derived Address).
-    #[account(init, seeds = [tx_id.as_slice()], bump, payer = user, space = 8 + 4 + tx_size as usize)]
+    #[account(init, seeds = [tx_id.as_slice()], bump, payer = signer, space = 8 + 4 + tx_size as usize)]
     pub tx_account: Account<'info, BigTxState>,
     pub system_program: Program<'info, System>,
     #[account(
@@ -166,7 +166,7 @@ pub struct InitBigTxVerify<'info> {
 pub struct StoreTxBytes<'info> {
     /// The user account initiating the verification.
     #[account(mut)]
-    pub user: Signer<'info>,
+    pub signer: Signer<'info>,
     /// The program's account used to store transaction's data. This should be a derived PDA (Program Derived Address).
     #[account(mut, seeds = [tx_id.as_slice()], bump)]
     pub tx_account: Account<'info, BigTxState>,
@@ -179,7 +179,7 @@ pub struct StoreTxBytes<'info> {
 pub struct FinalizeTx<'info> {
     /// The user account initiating the verification.
     #[account(mut)]
-    pub user: Signer<'info>,
+    pub signer: Signer<'info>,
     /// The program's account used to store transaction's data. This should be a derived PDA (Program Derived Address).
     #[account(mut, seeds = [tx_id.as_slice()], bump)]
     pub tx_account: Account<'info, BigTxState>,

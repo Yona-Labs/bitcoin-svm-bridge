@@ -1,5 +1,5 @@
-import * as anchor from "@project-serum/anchor";
-import {Program} from "@project-serum/anchor";
+import * as anchor from "@coral-xyz/anchor";
+import {Program} from "@coral-xyz/anchor";
 import {BtcRelay} from "../target/types/btc_relay";
 import {createHash} from "crypto";
 
@@ -22,13 +22,8 @@ function dblSha256(data: Buffer) {
     return createHash("sha256").update(hash1).digest();
 }
 
-const provider = anchor.AnchorProvider.local();
+const provider = anchor.AnchorProvider.env();
 const program = anchor.workspace.BtcRelay as Program<BtcRelay>;
-
-function programPaidBy(payer: anchor.web3.Keypair): anchor.Program {
-    const newProvider = new anchor.AnchorProvider(provider.connection, new anchor.Wallet(payer), {});
-    return new anchor.Program(program.idl as anchor.Idl, program.programId, newProvider)
-}
 
 const signer = anchor.web3.Keypair.generate();
 
@@ -108,7 +103,7 @@ describe("btc-relay", () => {
             commitment
         );
 
-        const tx = await programPaidBy(signer).methods
+        const tx = await program.methods
             .initialize(
                 header,
                 12999,
@@ -147,7 +142,7 @@ describe("btc-relay", () => {
         const depositTx = await program.rpc.deposit(
             new anchor.BN(900 * LAMPORTS_PER_SOL), {
                 accounts: {
-                    user: signer.publicKey,
+                    signer: signer.publicKey,
                     depositAccount,
                     systemProgram: SystemProgram.programId
                 },
@@ -221,7 +216,7 @@ describe("btc-relay", () => {
                 program.programId
             )[0];
 
-            const tx = await programPaidBy(signer).methods
+            const tx = await program.methods
                 .submitBlockHeaders(
                     [header],
                     currentCommited
@@ -259,7 +254,7 @@ describe("btc-relay", () => {
 
         const receiverBalanceBefore = await provider.connection.getBalance(mintReceiver);
 
-        const ix = await programPaidBy(signer).methods
+        const ix = await program.methods
             .verifySmallTx(
                 Buffer.from(txBytes, "hex"),
                 1,
@@ -323,7 +318,7 @@ describe("btc-relay", () => {
             program.programId
         );
 
-        const ix = await programPaidBy(signer).methods
+        const ix = await program.methods
             .initBigTxVerify(
                 txIdBytes,
                 new anchor.BN(txBytes.length),
@@ -362,7 +357,7 @@ describe("btc-relay", () => {
         for (let i = 0; i < txBytes.length; i += chunkSize) {
             const chunk = txBytes.subarray(i, i + chunkSize);
 
-            const ix = await programPaidBy(signer).methods
+            const ix = await program.methods
                 .storeTxBytes(
                     txIdBytes,
                     chunk
@@ -393,7 +388,7 @@ describe("btc-relay", () => {
         );
 
         const receiverBalanceBefore = await provider.connection.getBalance(mintReceiver);
-        const finalizeIx = await programPaidBy(signer).methods
+        const finalizeIx = await program.methods
             .finalizeTxProcessing(
                 txIdBytes
             )

@@ -458,14 +458,14 @@ pub mod btc_relay {
     pub fn deposit(ctx: Context<Deposit>, amount: u64) -> Result<()> {
         // Transfer SOL from the user to the program's account
         let ix = anchor_lang::solana_program::system_instruction::transfer(
-            &ctx.accounts.user.key,
+            &ctx.accounts.signer.key,
             &ctx.accounts.deposit_account.as_ref().key,
             amount,
         );
         anchor_lang::solana_program::program::invoke(
             &ix,
             &[
-                ctx.accounts.user.to_account_info(),
+                ctx.accounts.signer.to_account_info(),
                 ctx.accounts.deposit_account.to_account_info(),
             ],
         )?;
