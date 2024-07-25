@@ -80,7 +80,7 @@ static TEST_CTX: Lazy<TestCtx> = Lazy::new(|| {
         .expect("Esplora container to be started");
 
     // give everything some additional time to initialize
-    sleep(Duration::from_secs(5));
+    sleep(Duration::from_secs(10));
 
     TestCtx {
         docker,

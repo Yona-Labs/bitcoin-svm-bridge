@@ -28,7 +28,11 @@ jobs:
         run: solana config get
       - name: Install yarn dependencies
         run: yarn install
-      - name: Build
+      - name: Anchor Build
         run: anchor build
-      - name: Run tests
+      - name: Anchor Test
         run: anchor test
+      - name: Test Block Relayer
+        run: |
+          cd block_relayer
+          cargo test
