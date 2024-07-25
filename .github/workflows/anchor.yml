@@ -12,13 +12,9 @@ env:
 jobs:
   anchor:
     runs-on: ubuntu-latest
-    container: backpackapp/build:v0.30.1
+    container: artempikulin/build:latest
 
     steps:
-      - name: Maximize build space
-        uses: easimon/maximize-build-space@master
-        with:
-          remove-docker-images: true
       - uses: actions/checkout@v3
       - name: Install GCC multilib
         run: |
