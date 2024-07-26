@@ -98,8 +98,13 @@ static TEST_CTX: Lazy<TestCtx> = Lazy::new(|| {
 
 #[test]
 fn init_program() {
+    let bitcoind_url = match env::var("GITHUB_ACTIONS") {
+        Ok(_) => "http://172.17.0.1:18443".into(),
+        Err(_) => "http://127.0.0.1:18443".into(),
+    };
+
     let relay_config = RelayConfig {
-        bitcoind_url: "http://127.0.0.1:18443".into(),
+        bitcoind_url,
         bitcoin_auth: BitcoinAuth::UserPass {
             user: "test".into(),
             password: "test".into(),
