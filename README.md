@@ -59,15 +59,14 @@ attack depends on whether there is at least 1 honest party submitting blockheade
 ## Dev environment configuration
 
 1. Install Solana CLI: https://docs.solanalabs.com/cli/install
-2. Install Anchor: https://www.anchor-lang.com/docs/installation and select version `0.29.0`:
+2. Install Anchor: https://www.anchor-lang.com/docs/installation and select version `0.30.1`:
 
 ```bash
-avm install 0.29.0
-avm use 0.29.0
+avm install 0.30.1
+avm use 0.30.1
 ```
 
-3. Ensure that you have default Solana key at `~/.config/solana/id.json`. Alternatively, set path to it
-   in `Anchor.toml`.
+3. Generate a new keypair: `solana-keygen new --no-bip39-passphrase -s -o anchor.json`.
 4. Install yarn.
 5. Run `yarn` at the project root.
 6. Run `anchor test` to test BTC relay program.

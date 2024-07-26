@@ -1,0 +1,38 @@
+name: Anchor
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  anchor:
+    runs-on: ubuntu-latest
+    container: artempikulin/build:latest
+
+    steps:
+      - uses: actions/checkout@v3
+      - name: Install GCC multilib
+        run: |
+          apt-get update
+          apt-get install gcc-multilib -y
+      - name: Set default toolchain
+        run: rustup default stable
+      - name: Generate new keypair
+        run: solana-keygen new --no-bip39-passphrase -s -o anchor.json
+      - name: Check solana config
+        run: solana config get
+      - name: Install yarn dependencies
+        run: yarn install
+      - name: Anchor Build
+        run: anchor build
+      - name: Anchor Test
+        run: anchor test
+      - name: Test Block Relayer
+        run: |
+          cd block_relayer
+          cargo test

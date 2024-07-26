@@ -1,0 +1,12 @@
+bitcoind_url = "http://localhost:18443"
+yona_http = "http://devnet-rpc.yona.network:8899"
+yona_ws = "ws://devnet-rpc.yona.network:8900"
+yona_keipair = ".config/solana/id.json"
+
+[bitcoin_auth]
+type = "userpass"
+user = "test"
+password = "test"
+
+#type = "cookie"
+#path = "/bitcoin/regtest/.cookie"

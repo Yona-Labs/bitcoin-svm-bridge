@@ -15,12 +15,12 @@ no-log-ix-name = []
 cpi = ["no-entrypoint"]
 default = []
 bitcoin_testnet = []
-mocked = []
+idl-build = ["anchor-lang/idl-build"]
 
 [profile.release]
 overflow-checks = true
 
 [dependencies]
-anchor-lang = { version = "0.29.0", features = ["init-if-needed"] }
-bitcoin = "0.32.2"
+anchor-lang = { version = "=0.30.1", features = ["init-if-needed"] }
+bitcoin = { version = "=0.32.2", default-features = false }
 bytemuck = { version = "1.14.0", features = ["min_const_generics"] }

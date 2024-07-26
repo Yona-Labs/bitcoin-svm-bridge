@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Yona-Bitcoin Bridge</title>
+    <style>
+        :root {
+            line-height: 1.5;
+            font-weight: 400;
+            color-scheme: light dark;
+            color: #ffffffde;
+            font-synthesis: none;
+            text-rendering: optimizeLegibility;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale
+        }
+
+        * {
+            box-sizing: border-box
+        }
+
+        body {
+            margin: 0;
+            min-height: 100vh;
+            background-color: #000;
+            font-family: SfCompactDisplay;
+            color: #fff;
+            display: flex;
+            justify-content: center;
+            align-items: center
+        }
+
+        /* Additional styles for the forms */
+        .container {
+            width: 60vw;
+            max-width: 800px;
+            padding: 2em;
+            background-color: #1a1a1a;
+            border-radius: 10px;
+            box-shadow: 0 0 10px rgba(255, 255, 255, 0.1);
+        }
+
+        h1 {
+            text-align: center;
+            margin-bottom: 1em;
+        }
+
+        form {
+            margin-bottom: 2em;
+        }
+
+        input, button {
+            display: block;
+            width: 100%;
+            margin: 0.5em 0;
+            padding: 0.5em;
+            border: none;
+            border-radius: 5px;
+        }
+
+        input {
+            background-color: #333;
+            color: #fff;
+        }
+
+        button {
+            background-color: #ff7a00;
+            color: white;
+            cursor: pointer;
+            transition: background-color 0.3s ease;
+        }
+
+        button:hover {
+            background-color: #ff9933;
+        }
+
+        #depositResult, #relayResult, #faucetResult {
+            margin-top: 1em;
+            padding: 1em;
+            background-color: #333;
+            border-radius: 5px;
+            text-align: center;
+        }
+    </style>
+</head>
+<body>
+<div class="container">
+    <h1>Yona-Bitcoin Bridge</h1>
+
+    <form id="depositForm">
+        <h2>Generate Deposit Address</h2>
+        <input type="text" id="yonaAddress" placeholder="Enter Yona Address" required>
+        <button type="submit">Generate Deposit Address</button>
+    </form>
+    <div id="depositResult"></div>
+
+    <form id="relayForm">
+        <h2>Relay Transaction</h2>
+        <input type="text" id="relayAddress" placeholder="Enter Yona Address" required>
+        <input type="text" id="bitcoinTxId" placeholder="Enter Bitcoin Transaction ID" required>
+        <button type="submit">Submit</button>
+    </form>
+    <div id="relayResult"></div>
+
+    <form id="faucetForm">
+        <h2>BTC Faucet</h2>
+        <input type="text" id="bitcoinAddress" placeholder="Enter Bitcoin Address" required>
+        <button type="submit">Request from Faucet</button>
+    </form>
+    <div id="faucetResult"></div>
+</div>
+
+<script>
+    document.getElementById('depositForm').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const yonaAddress = document.getElementById('yonaAddress').value;
+
+        try {
+            const response = await fetch(`http://139.59.156.238:8199/get_deposit_address?yona_address=${encodeURIComponent(yonaAddress)}`);
+            const data = await response.text();
+
+            if (data) {
+                document.getElementById('depositResult').innerHTML = `Generated Bitcoin Address: ${data}`;
+            } else {
+                document.getElementById('depositResult').innerHTML = `Error: Unable to generate Bitcoin address`;
+            }
+        } catch (error) {
+            document.getElementById('depositResult').innerHTML = `Error: ${error.message}`;
+        }
+    });
+
+    document.getElementById('relayForm').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const yonaAddress = document.getElementById('relayAddress').value;
+        const txId = document.getElementById('bitcoinTxId').value;
+
+        try {
+            const response = await fetch('http://139.59.156.238:8199/relay_tx', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    tx_id: txId,
+                    yona_address: yonaAddress
+                })
+            });
+
+            const result = await response.json();
+            document.getElementById('relayResult').innerHTML = `${JSON.stringify(result)}`;
+        } catch (error) {
+            document.getElementById('relayResult').innerHTML = `Error: ${error.message}`;
+        }
+    });
+
+    document.getElementById('faucetForm').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const bitcoinAddress = document.getElementById('bitcoinAddress').value;
+
+        try {
+            const response = await fetch(`http://139.59.156.238:8099/faucet?address=${encodeURIComponent(bitcoinAddress)}`);
+            const data = await response.text();
+
+            if (data) {
+                document.getElementById('faucetResult').innerHTML = `${data}`;
+            } else {
+                document.getElementById('faucetResult').innerHTML = `Error: Unable to process faucet request`;
+            }
+        } catch (error) {
+            document.getElementById('faucetResult').innerHTML = `Error: ${error.message}`;
+        }
+    });
+</script>
+</body>
+</html>

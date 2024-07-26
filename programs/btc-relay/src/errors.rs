@@ -32,4 +32,6 @@ pub enum RelayErrorCode {
     InvalidForkId,
     #[msg("Didn't pass enough remaining accounts!")]
     InvalidRemainingAccounts,
+    #[msg("No outputs sending to expected deposit address!")]
+    NoDepositOutputs,
 }
