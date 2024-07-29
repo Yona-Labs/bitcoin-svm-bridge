@@ -13,6 +13,8 @@ The repository contains the following components:
 - [Off-chain Block relayer](block_relayer)
 - [Faucet for custom Bitcoin testnet](btc_faucet)
 
+## Bridge architecture
+
 ## Dev environment configuration
 
 1. Install Rust and Docker.
