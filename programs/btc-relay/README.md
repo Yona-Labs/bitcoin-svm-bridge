@@ -2,15 +2,26 @@
 
 This module is forked from https://github.com/adambor/BTCRelay-Sol with the following changes:
 
-- Added function to deposit Yona BTC to the relay program's PDA, which is later transferred to the selected address,
-  specified
-  in bridge transaction output's redeem script.
-- Tx inclusion verification function parses the transaction, validates its outputs, and transfers the bridged amount to
-  selected
-  address.
-- Added functions allowing to process a Bitcoin transaction, which can't be processed in a single Yona tx due to size
-  limits.
--
+- Added function to deposit Yona BTC to the relay program's PDA. This BTC is later transferred to the selected address
+  specified in the bridge transaction output's redeem script.
+- Transaction inclusion verification function parses the transaction, validates its outputs, and transfers the bridged
+  amount to the selected address.
+- Added functions allowing the processing of large Bitcoin transactions that can't be processed in a single Yona
+  transaction due to size limits.
+- Modified tests to use data from Yona's own Bitcoin testnet.
+- Updated Anchor framework version.
+- (TODO) Add functions to burn Yona BTC by transferring it to the relay program's PDA. Bridge nodes will then
+  release funds to the selected address on the Bitcoin network.
+
+## Original Readme
+
+This project is heavily inspired by:
+
+- https://github.com/crossclaim/btcrelay-sol
+- https://github.com/ethereum/btcrelay
+
+Bitcoin relay is an on-chain program used to verify and store bitcoin blockheaders. This program is completely
+permissionless and trustless, anyone can write blockheaders as their validity is verified on-chain.
 
 ## Verification
 
