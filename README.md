@@ -16,38 +16,31 @@ The repository contains the following components:
 ## Bridge architecture
 
 ```mermaid
-flowchart LR
-%% Bitcoin Network
-    subgraph Bitcoin["Bitcoin Network"]
-        BTC["Bitcoin Blockchain"]
+flowchart TD
+    BTC["Bitcoin Blockchain"]
+    
+    UI["Bridge UI"]
+    subgraph Nodes["Bridge Nodes using FROST"]
+        Node1["Node 1"]
+        Node2["Node 2"]
+        Node3["Node 3"]
+        More["..."]
     end
+    BR["Block Relayer"]
+    TR["Transaction Relayer"]
 
-%% Bridge Components
-    subgraph Bridge["Bridge Components"]
-        UI["Bridge UI"]
-        subgraph Nodes["Bridge Nodes using FROST"]
-            Node1["Node 1"]
-            Node2["Node 2"]
-            Node3["Node 3"]
-            More["..."]
-        end
-        BR["Block Relayer"]
-        TR["Transaction Relayer"]
-    end
-
-%% Yona Network
     subgraph Yona["Yona Network"]
-        YRP["Yona Relay Program"]
+        YRP["Relay Program"]
     end
 
-%% Connections
     BTC -->|Block data| BR
     BTC -->|Tx data| TR
     BR -->|Relay block headers| YRP
     TR -->|Relay deposit transactions| YRP
+    UI -->|Send burn transactions| YRP
     UI -->|Notify about deposit transactions| TR
-    Nodes -->|Create, cooperatively sign and broadcast withdrawal transaction| BTC
-    Nodes <-->|Monitor burn transactions| YRP
+    Nodes -->|Cooperatively sign and broadcast withdrawal transactions| BTC
+    Nodes <-->|Monitor mint and burn transactions| YRP
 ```
 
 ## Dev environment configuration
