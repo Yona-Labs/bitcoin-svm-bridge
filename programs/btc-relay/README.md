@@ -1,4 +1,4 @@
-# Yona Bitcoin relay solana program
+# Yona Bitcoin Relay program
 
 This module is forked from https://github.com/adambor/BTCRelay-Sol with the following changes:
 
