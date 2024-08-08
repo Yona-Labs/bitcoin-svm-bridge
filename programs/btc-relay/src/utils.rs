@@ -265,7 +265,7 @@ pub fn verify_header(
     let target = nbits_to_target(header.nbits);
     require!(
         arrayutils::lte_arr(block_hash, target),
-        RelayErrorCode::ErrPowToolow
+        RelayErrorCode::ErrPowTooLow
     );
 
     let prev_block_timestamp = last_commited_header.header.timestamp;
@@ -277,7 +277,7 @@ pub fn verify_header(
             prev_block_timestamp,
             timestamp
         ),
-        RelayErrorCode::ErrTimestampToolow
+        RelayErrorCode::ErrTimestampTooLow
     );
 
     let current_timestamp = now_ts()?;

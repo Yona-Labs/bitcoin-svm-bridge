@@ -188,3 +188,10 @@ pub struct FinalizeTx<'info> {
     #[account(mut)]
     pub mint_receiver: SystemAccount<'info>,
 }
+
+#[derive(Accounts)]
+pub struct BridgeWithdraw<'info> {
+    /// The user account initiating the withdrawal.
+    #[account(mut)]
+    pub signer: Signer<'info>,
+}

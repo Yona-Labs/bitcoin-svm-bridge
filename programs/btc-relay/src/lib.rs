@@ -399,7 +399,9 @@ pub mod btc_relay {
             RelayErrorCode::PrevBlockCommitment
         );
 
-        let bitcoin_tx = Transaction::consensus_decode(&mut tx_bytes.as_slice()).unwrap();
+        let bitcoin_tx = Transaction::consensus_decode(&mut tx_bytes.as_slice())
+            .map_err(|_| RelayErrorCode::TxDecodeFailure)?;
+
         let amount_to_transfer =
             bridge_mint_amount(&bitcoin_tx, ctx.accounts.mint_receiver.key().to_bytes());
 
@@ -519,9 +521,12 @@ pub mod btc_relay {
     pub fn finalize_tx_processing(ctx: Context<FinalizeTx>, tx_id: [u8; 32]) -> Result<()> {
         let bitcoin_tx =
             Transaction::consensus_decode(&mut ctx.accounts.tx_account.tx_bytes.as_slice())
-                .unwrap();
+                .map_err(|_| RelayErrorCode::TxDecodeFailure)?;
 
-        assert_eq!(tx_id, bitcoin_tx.compute_txid().as_ref());
+        require!(
+            tx_id == bitcoin_tx.compute_txid().as_ref(),
+            RelayErrorCode::UnexpectedTxId
+        );
         let amount_to_transfer =
             bridge_mint_amount(&bitcoin_tx, ctx.accounts.mint_receiver.key().to_bytes());
 
@@ -537,5 +542,9 @@ pub mod btc_relay {
 
         **ctx.accounts.mint_receiver.try_borrow_mut_lamports()? += sol_amount;
         Ok(())
+    }
+
+    pub fn bridge_withdraw(ctx: Context<BridgeWithdraw>, amount: u64) -> Result<()> {
+        unimplemented!()
     }
 }

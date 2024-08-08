@@ -430,4 +430,12 @@ describe("btc-relay", () => {
         const expectedBalance = receiverBalanceBefore + LAMPORTS_PER_SOL;
         chai.expect(receiverBalanceAfter).eq(expectedBalance);
     });
+
+    it("Bridge withdraw", async () => {
+        const context = {
+            payer: program.provider.publicKey,
+        };
+
+        const withdrawTxHash = await program.methods.bridgeWithdraw(new anchor.BN(LAMPORTS_PER_SOL)).accounts(context).rpc();
+    });
 });

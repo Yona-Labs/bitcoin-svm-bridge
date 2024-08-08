@@ -9,9 +9,9 @@ pub enum RelayErrorCode {
     #[msg("Invalid difficulty target.")]
     ErrDiffTarget,
     #[msg("PoW too low.")]
-    ErrPowToolow,
+    ErrPowTooLow,
     #[msg("Timestamp too low.")]
-    ErrTimestampToolow,
+    ErrTimestampTooLow,
     #[msg("Timestamp too high.")]
     ErrTimestampTooHigh,
     #[msg("Invalid header topic specified in accounts.")]
@@ -34,4 +34,8 @@ pub enum RelayErrorCode {
     InvalidRemainingAccounts,
     #[msg("No outputs sending to expected deposit address!")]
     NoDepositOutputs,
+    #[msg("Unexpected Bitcoin tx id!")]
+    UnexpectedTxId,
+    #[msg("Could not decode Bitcoin tx!")]
+    TxDecodeFailure,
 }
