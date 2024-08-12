@@ -3,18 +3,14 @@ mod merkle;
 mod relay_program_interaction;
 
 use crate::config::RelayConfig;
-use crate::relay_program_interaction::{
-    init_program, reconstruct_commited_header, relay_tx, submit_block,
-};
+use crate::relay_program_interaction::*;
 use actix_cors::Cors;
 use actix_web::{web, App, HttpResponse, HttpServer, Responder};
-use anchor_client::anchor_lang::{AccountDeserialize, AnchorDeserialize, Id};
+use anchor_client::anchor_lang::{AccountDeserialize, Id};
 use anchor_client::solana_sdk::commitment_config::CommitmentConfig;
 use anchor_client::solana_sdk::pubkey::Pubkey;
 use anchor_client::solana_sdk::signature::{read_keypair_file, Keypair, Signature};
 use anchor_client::{Client as AnchorClient, ClientError as AnchorClientError, Cluster, Program};
-use base64::prelude::BASE64_STANDARD;
-use base64::Engine;
 use bitcoin::hashes::Hash;
 use bitcoin::hex::DisplayHex;
 use bitcoin::{Address, BlockHash, Network, PublicKey, Txid};
@@ -25,14 +21,13 @@ use btc_relay::state::MainState;
 use btc_relay::utils::{bridge_deposit_script, BITCOIN_DEPOSIT_PUBKEY};
 use log::{debug, error, info};
 use serde::Deserialize;
-use solana_transaction_status::UiTransactionEncoding;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 use std::{env, error, thread};
 use tokio::task::spawn_blocking;
 
-fn get_yona_client(
+pub fn get_yona_client(
     config: &RelayConfig,
 ) -> Result<AnchorClient<Arc<Keypair>>, Box<dyn error::Error>> {
     let mut keypair_path = env::home_dir().expect("to get the home dir");
@@ -213,6 +208,27 @@ pub fn run_init_program(config: RelayConfig) -> Result<Signature, InitProgramErr
     debug!("Bitcoin last block {last_block:?}");
 
     Ok(init_program(&program, last_block, tip.height as u32)?)
+}
+
+#[derive(Debug)]
+pub enum DepositError {
+    Anchor(AnchorClientError),
+    CouldNotInitYonaClient(Box<dyn error::Error>),
+}
+
+impl From<AnchorClientError> for DepositError {
+    fn from(error: AnchorClientError) -> Self {
+        DepositError::Anchor(error)
+    }
+}
+
+pub fn run_deposit(config: RelayConfig, amount: u64) -> Result<Signature, DepositError> {
+    let yona_client = get_yona_client(&config).map_err(DepositError::CouldNotInitYonaClient)?;
+
+    let relay_program = BtcRelay::id();
+    let program = yona_client.program(relay_program)?;
+
+    Ok(init_deposit(&program, amount)?)
 }
 
 struct RelayTransactionsState {

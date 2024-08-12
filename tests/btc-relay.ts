@@ -91,6 +91,11 @@ describe("btc-relay", () => {
         program.programId
     );
 
+    const [depositAccount] = anchor.web3.PublicKey.findProgramAddressSync(
+        [Buffer.from("solana_deposit")],
+        program.programId
+    );
+
     it("Is initialized!", async () => {
         // Add your test here.
         const signature = await provider.connection.requestAirdrop(signer.publicKey, 1000 * LAMPORTS_PER_SOL);
@@ -382,11 +387,6 @@ describe("btc-relay", () => {
             });
         }
 
-        const [depositAccount, depositBump] = await anchor.web3.PublicKey.findProgramAddress(
-            [Buffer.from("solana_deposit")],
-            program.programId
-        );
-
         const receiverBalanceBefore = await provider.connection.getBalance(mintReceiver);
         const finalizeIx = await program.methods
             .finalizeTxProcessing(
@@ -432,10 +432,19 @@ describe("btc-relay", () => {
     });
 
     it("Bridge withdraw", async () => {
+        const withdrawAmount = 10 * LAMPORTS_PER_SOL;
+        const bitcoinAddress = "bcrt1qm3zxtz0evpc0r5ch3az2ulx0cxce9yjkcs73cq";
+
         const context = {
-            payer: program.provider.publicKey,
+            signer: program.provider.publicKey,
+            depositAccount,
+            systemProgram: SystemProgram.programId
         };
 
-        const withdrawTxHash = await program.methods.bridgeWithdraw(new anchor.BN(LAMPORTS_PER_SOL)).accounts(context).rpc();
+        const depositBalanceBefore = await provider.connection.getBalance(depositAccount);
+        await program.methods.bridgeWithdraw(new anchor.BN(withdrawAmount), bitcoinAddress).accounts(context).rpc();
+
+        const depositBalanceAfter = await provider.connection.getBalance(depositAccount);
+        chai.expect(depositBalanceAfter).eq(depositBalanceBefore + withdrawAmount);
     });
 });

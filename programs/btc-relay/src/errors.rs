@@ -38,4 +38,6 @@ pub enum RelayErrorCode {
     UnexpectedTxId,
     #[msg("Could not decode Bitcoin tx!")]
     TxDecodeFailure,
+    #[msg("Invalid Bitcoin address!")]
+    InvalidBitcoinAddress,
 }

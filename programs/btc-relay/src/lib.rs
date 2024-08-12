@@ -1,11 +1,15 @@
 use anchor_lang::prelude::*;
+use bitcoin::address::Address;
 use bitcoin::consensus::Decodable;
+use bitcoin::Network;
 use bitcoin::Transaction;
+use std::str::FromStr;
 
 use errors::*;
 use events::*;
 use instructions::*;
 use structs::*;
+use utils::bridge_mint_amount;
 
 mod arrayutils;
 mod errors;
@@ -20,7 +24,6 @@ declare_id!("HY7CpkPjh5FgcU22RmEpqD6T5ZNWSgmwiTDYE5yHRfmf");
 #[program]
 pub mod btc_relay {
     use super::*;
-    use crate::utils::bridge_mint_amount;
 
     // Initializes the program with the initial block header,
     // this can be any past block header with high enough confirmations to be sure it doesn't get re-orged.
@@ -544,7 +547,35 @@ pub mod btc_relay {
         Ok(())
     }
 
-    pub fn bridge_withdraw(ctx: Context<BridgeWithdraw>, amount: u64) -> Result<()> {
-        unimplemented!()
+    pub fn bridge_withdraw(
+        ctx: Context<BridgeWithdraw>,
+        amount: u64,
+        bitcoin_address: String,
+    ) -> Result<()> {
+        // check that valid bitcoin address is provided
+        Address::from_str(&bitcoin_address)
+            .map_err(|_| error!(RelayErrorCode::InvalidBitcoinAddress))?
+            .require_network(Network::Regtest)
+            .map_err(|_| error!(RelayErrorCode::InvalidBitcoinAddress))?;
+
+        let ix = anchor_lang::solana_program::system_instruction::transfer(
+            &ctx.accounts.signer.key,
+            &ctx.accounts.deposit_account.as_ref().key,
+            amount,
+        );
+        anchor_lang::solana_program::program::invoke(
+            &ix,
+            &[
+                ctx.accounts.signer.to_account_info(),
+                ctx.accounts.deposit_account.to_account_info(),
+            ],
+        )?;
+
+        emit!(Withdrawal {
+            amount,
+            bitcoin_address
+        });
+
+        Ok(())
     }
 }

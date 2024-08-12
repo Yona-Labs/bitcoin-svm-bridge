@@ -23,3 +23,9 @@ pub struct ChainReorg {
     pub tip_block_hash: [u8; 32],
     pub tip_commit_hash: [u8; 32],
 }
+
+#[event]
+pub struct Withdrawal {
+    pub amount: u64,
+    pub bitcoin_address: String,
+}

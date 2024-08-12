@@ -4,7 +4,7 @@ use std::fs;
 use std::io;
 use toml;
 
-#[derive(Deserialize, Debug)]
+#[derive(Clone, Deserialize, Debug)]
 #[serde(tag = "type")]
 #[serde(rename_all = "lowercase")]
 pub enum BitcoinAuth {
@@ -21,7 +21,7 @@ impl From<BitcoinAuth> for Auth {
     }
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Clone, Deserialize, Debug)]
 pub struct RelayConfig {
     pub bitcoind_url: String,
     pub bitcoin_auth: BitcoinAuth,

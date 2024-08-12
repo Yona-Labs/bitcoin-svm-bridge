@@ -10,7 +10,6 @@ use crate::structs::*;
 pub struct Initialize<'info> {
     #[account(mut)]
     pub signer: Signer<'info>,
-
     #[account(
         init,
         seeds = [b"state".as_ref()],
@@ -19,14 +18,12 @@ pub struct Initialize<'info> {
         space = MainState::space()
     )]
     pub main_state: AccountLoader<'info, MainState>,
-
     /// CHECK: This is only used for indexing purposes
     #[account(
         seeds = [b"header".as_ref(), data.get_block_hash()?.as_ref()],
         bump
     )]
     pub header_topic: AccountInfo<'info>,
-
     pub system_program: Program<'info, System>,
 }
 
@@ -194,4 +191,7 @@ pub struct BridgeWithdraw<'info> {
     /// The user account initiating the withdrawal.
     #[account(mut)]
     pub signer: Signer<'info>,
+    #[account(mut, seeds = [b"solana_deposit".as_ref()], bump)]
+    pub deposit_account: AccountLoader<'info, DepositState>,
+    pub system_program: Program<'info, System>,
 }

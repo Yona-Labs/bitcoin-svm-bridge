@@ -1,5 +1,7 @@
+use anchor_client::anchor_lang::prelude::Pubkey;
+use anchor_client::solana_sdk::native_token::LAMPORTS_PER_SOL;
 use block_relayer_lib::config::{BitcoinAuth, RelayConfig};
-use block_relayer_lib::run_init_program;
+use block_relayer_lib::{get_yona_client, run_deposit, run_init_program};
 use bollard::container::RemoveContainerOptions;
 use bollard::Docker;
 use once_cell::sync::Lazy;
@@ -22,6 +24,7 @@ struct TestCtx {
     esplora_container: ContainerAsync<GenericImage>,
     anchor_localnet_handle: Mutex<Child>,
     current_dir: PathBuf,
+    relay_config: RelayConfig,
 }
 
 static TEST_RUNTIME: Lazy<Runtime> =
@@ -43,7 +46,7 @@ static TEST_CTX: Lazy<TestCtx> = Lazy::new(|| {
         // just do nothing here
     };
 
-    let current_dir = std::env::current_dir().unwrap();
+    let current_dir = env::current_dir().unwrap();
 
     let anchor_localnet_handle = Command::new("anchor")
         .arg("localnet")
@@ -88,16 +91,7 @@ static TEST_CTX: Lazy<TestCtx> = Lazy::new(|| {
     // give everything some additional time to initialize
     sleep(Duration::from_secs(10));
 
-    TestCtx {
-        docker,
-        esplora_container,
-        anchor_localnet_handle: Mutex::new(anchor_localnet_handle),
-        current_dir,
-    }
-});
-
-#[test]
-fn init_program() {
+    // init program, deposit some amount and run block relay in background
     let bitcoind_url = match env::var("GITHUB_ACTIONS") {
         Ok(_) => "http://172.17.0.1:18443".into(),
         Err(_) => "http://127.0.0.1:18443".into(),
@@ -111,14 +105,43 @@ fn init_program() {
         },
         yona_http: "http://127.0.0.1:8899".into(),
         yona_ws: "ws://127.0.0.1:8900/".into(),
-        yona_keipair: TEST_CTX
-            .current_dir
-            .join("../anchor.json")
-            .display()
-            .to_string(),
+        yona_keipair: current_dir.join("../anchor.json").display().to_string(),
     };
 
-    let init_result = run_init_program(relay_config).expect("run_init_program");
-
+    let init_result = run_init_program(relay_config.clone()).expect("run_init_program");
     println!("Init result {}", init_result);
+
+    let deposit_result =
+        run_deposit(relay_config.clone(), 100 * LAMPORTS_PER_SOL).expect("run_deposit");
+    println!("Deposit result {}", init_result);
+
+    TestCtx {
+        docker,
+        esplora_container,
+        anchor_localnet_handle: Mutex::new(anchor_localnet_handle),
+        current_dir,
+        relay_config,
+    }
+});
+
+#[test]
+fn program_initialized() {
+    let client = get_yona_client(&TEST_CTX.relay_config).expect("get_yona_client");
+
+    let (main_state, _) = Pubkey::find_program_address(&[b"state"], &btc_relay::id());
+
+    let program = client.program(btc_relay::id()).expect("btc_relay program");
+    // this call will work only if program is initialized
+    program
+        .rpc()
+        .get_account(&main_state)
+        .expect("get main state account");
+
+    let (deposit_account, _) = Pubkey::find_program_address(&[b"solana_deposit"], &btc_relay::id());
+    let deposit_balance = program
+        .rpc()
+        .get_balance(&deposit_account)
+        .expect("deposit account get_balance");
+    // should be slightly larger because deposit account is rent-exempt
+    assert!(deposit_balance > 100 * LAMPORTS_PER_SOL);
 }
