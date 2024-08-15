@@ -8,10 +8,13 @@ use bitcoin::hashes::Hash;
 use bitcoin::hex::DisplayHex;
 use bitcoin::{Block, BlockHash, Txid};
 use bitcoincore_rpc::{Client as BitcoinRpcClient, Error as BtcRpcError, RpcApi};
-use btc_relay::accounts::{Deposit, Initialize, SubmitBlockHeaders, VerifyTransaction};
+use btc_relay::accounts::{
+    BridgeWithdraw, Deposit, Initialize, SubmitBlockHeaders, VerifyTransaction,
+};
 use btc_relay::instruction::{
-    Deposit as DepositInstruction, Initialize as InitializeInstruction,
-    SubmitBlockHeaders as SubmitBlockHeadersInstruction, VerifySmallTx as VerifySmallTxInstruction,
+    BridgeWithdraw as BridgeWithdrawInstruction, Deposit as DepositInstruction,
+    Initialize as InitializeInstruction, SubmitBlockHeaders as SubmitBlockHeadersInstruction,
+    VerifySmallTx as VerifySmallTxInstruction,
 };
 use btc_relay::state::MainState;
 use btc_relay::structs::{BlockHeader, CommittedBlockHeader};
@@ -67,11 +70,29 @@ pub(crate) fn init_deposit(
         .send()
 }
 
+pub enum InitError {
+    Anchor(AnchorClientError),
+    Bitcoin(BtcRpcError),
+}
+
+impl From<AnchorClientError> for InitError {
+    fn from(error: AnchorClientError) -> Self {
+        InitError::Anchor(error)
+    }
+}
+
+impl From<BtcRpcError> for InitError {
+    fn from(error: BtcRpcError) -> Self {
+        InitError::Bitcoin(error)
+    }
+}
+
 pub fn init_program(
     program: &Program<Arc<Keypair>>,
+    bitcoind_client: &BitcoinRpcClient,
     block: Block,
     block_height: u32,
-) -> Result<Signature, AnchorClientError> {
+) -> Result<Signature, InitError> {
     let (main_state, _) = Pubkey::find_program_address(&[b"state"], &program.id());
 
     let yona_block_header = BlockHeader {
@@ -83,7 +104,16 @@ pub fn init_program(
         nonce: block.header.nonce,
     };
 
-    let block_hash = yona_block_header.get_block_hash()?;
+    let block_hash = yona_block_header
+        .get_block_hash()
+        .map_err(AnchorClientError::from)?;
+
+    let mut prev_block_timestamps = [0; 10];
+    for i in 0..10 {
+        let prev_block_hash = bitcoind_client.get_block_hash(block_height as u64 - i as u64 - 1)?;
+        let block = bitcoind_client.get_block(&prev_block_hash)?;
+        prev_block_timestamps[9 - i] = block.header.time;
+    }
 
     let (header_topic, _) =
         Pubkey::find_program_address(&[b"header", block_hash.as_slice()], &program.id());
@@ -101,7 +131,7 @@ pub fn init_program(
             block_height,
             chain_work: [0; 32],
             last_diff_adjustment: yona_block_header.timestamp,
-            prev_block_timestamps: [yona_block_header.timestamp; 10],
+            prev_block_timestamps,
         })
         .send()?;
 
@@ -158,7 +188,7 @@ pub(crate) fn submit_block(
 }
 
 #[derive(Debug)]
-pub(crate) enum RelayTxError {
+pub enum RelayTxError {
     Anchor(AnchorClientError),
     BitcoinRpc(BtcRpcError),
     TxIsNotIncludedToBlock,
@@ -177,7 +207,7 @@ impl From<BtcRpcError> for RelayTxError {
     }
 }
 
-pub(crate) fn relay_tx(
+pub fn relay_tx(
     program: &Program<Arc<Keypair>>,
     main_state: Pubkey,
     bitcoind_client: &BitcoinRpcClient,
@@ -230,6 +260,29 @@ pub(crate) fn relay_tx(
             tx_index: tx_pos as u32,
             commited_header,
             reversed_merkle_proof: proof.to_reversed_vec(),
+        })
+        .send()?;
+
+    Ok(res)
+}
+
+pub fn bridge_withdraw(
+    program: &Program<Arc<Keypair>>,
+    amount: u64,
+    bitcoin_address: String,
+) -> Result<Signature, AnchorClientError> {
+    let (deposit_account, _) = Pubkey::find_program_address(&[b"solana_deposit"], &program.id());
+
+    let res = program
+        .request()
+        .accounts(BridgeWithdraw {
+            signer: program.payer(),
+            deposit_account,
+            system_program: anchor_client::solana_sdk::system_program::ID,
+        })
+        .args(BridgeWithdrawInstruction {
+            amount,
+            bitcoin_address,
         })
         .send()?;
 

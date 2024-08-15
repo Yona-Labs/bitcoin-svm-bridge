@@ -1,6 +1,6 @@
 pub mod config;
 mod merkle;
-mod relay_program_interaction;
+pub mod relay_program_interaction;
 
 use crate::config::RelayConfig;
 use crate::relay_program_interaction::*;
@@ -44,7 +44,7 @@ pub fn get_yona_client(
     ))
 }
 
-pub fn relay_blocks_from_full_node(config: RelayConfig) {
+pub fn relay_blocks_from_full_node(config: RelayConfig, wait_for_new_block: u64) {
     let yona_client = get_yona_client(&config).expect("Couldn't create Yona client");
 
     let bitcoind_client = BitcoinRpcClient::new(&config.bitcoind_url, config.bitcoin_auth.into())
@@ -128,7 +128,7 @@ pub fn relay_blocks_from_full_node(config: RelayConfig) {
 
         if last_submitted_height >= best_block_height {
             info!("Latest BTC block {best_block_height} is already submitted to Yona. Waiting for a new one.");
-            thread::sleep(Duration::from_secs(30));
+            thread::sleep(Duration::from_secs(wait_for_new_block));
             continue;
         }
 
@@ -164,13 +164,6 @@ pub fn relay_blocks_from_full_node(config: RelayConfig) {
             continue;
         }
     }
-
-    /*
-    if env::var("INIT_DEPOSIT").is_ok() {
-        init_deposit(&program, 100 * LAMPORTS_PER_SOL);
-    }
-
-     */
 }
 
 #[derive(Debug)]
@@ -192,6 +185,15 @@ impl From<BtcError> for InitProgramError {
     }
 }
 
+impl From<InitError> for InitProgramError {
+    fn from(err: InitError) -> Self {
+        match err {
+            InitError::Anchor(e) => InitProgramError::Anchor(e),
+            InitError::Bitcoin(e) => InitProgramError::Bitcoin(e),
+        }
+    }
+}
+
 /// Initializes BTC relay program using the current Bitcoin tip (latest block)
 pub fn run_init_program(config: RelayConfig) -> Result<Signature, InitProgramError> {
     let yona_client = get_yona_client(&config).map_err(InitProgramError::CouldNotInitYonaClient)?;
@@ -207,7 +209,12 @@ pub fn run_init_program(config: RelayConfig) -> Result<Signature, InitProgramErr
     let last_block = bitcoind_client.get_block(&tip.hash)?;
     debug!("Bitcoin last block {last_block:?}");
 
-    Ok(init_program(&program, last_block, tip.height as u32)?)
+    Ok(init_program(
+        &program,
+        &bitcoind_client,
+        last_block,
+        tip.height as u32,
+    )?)
 }
 
 #[derive(Debug)]

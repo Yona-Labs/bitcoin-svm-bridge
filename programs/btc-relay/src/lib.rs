@@ -1,6 +1,8 @@
 use anchor_lang::prelude::*;
 use bitcoin::address::Address;
 use bitcoin::consensus::Decodable;
+use bitcoin::hashes::Hash;
+use bitcoin::hex::FromHex;
 use bitcoin::Network;
 use bitcoin::Transaction;
 use std::str::FromStr;
@@ -9,7 +11,7 @@ use errors::*;
 use events::*;
 use instructions::*;
 use structs::*;
-use utils::bridge_mint_amount;
+use utils::{bridge_mint_amount, BITCOIN_DEPOSIT_PUBKEY};
 
 mod arrayutils;
 mod errors;
@@ -410,11 +412,9 @@ pub mod btc_relay {
 
         require!(amount_to_transfer > 0, RelayErrorCode::NoDepositOutputs);
 
-        let computed_merkle = utils::compute_merkle(
-            bitcoin_tx.compute_txid().as_ref(),
-            tx_index,
-            reversed_merkle_proof,
-        );
+        let tx_id = bitcoin_tx.compute_txid();
+        let computed_merkle =
+            utils::compute_merkle(tx_id.as_ref(), tx_index, reversed_merkle_proof);
 
         require!(
             computed_merkle == commited_header.header.merkle_root,
@@ -429,6 +429,12 @@ pub mod btc_relay {
             .as_ref()
             .try_borrow_mut_lamports()? -= sol_amount;
         **ctx.accounts.mint_receiver.try_borrow_mut_lamports()? += sol_amount;
+
+        emit!(DepositTxVerified {
+            tx_id: tx_id.to_byte_array(),
+            yona_address: *ctx.accounts.mint_receiver.key,
+            bitcoin_pubkey: FromHex::from_hex(BITCOIN_DEPOSIT_PUBKEY).unwrap(),
+        });
         Ok(())
     }
 

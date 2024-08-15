@@ -30,7 +30,7 @@ fn main() {
             let result = run_init_program(config).expect("Relay program initialization failed");
             println!("Initialization tx signature {}", result);
         }
-        RelayerCommand::RelayBlocks => relay_blocks_from_full_node(config),
+        RelayerCommand::RelayBlocks => relay_blocks_from_full_node(config, 30),
         RelayerCommand::RelayTransactions => {
             let runtime = Runtime::new().expect("tokio runtime to be created");
             runtime.block_on(relay_transactions(config));
