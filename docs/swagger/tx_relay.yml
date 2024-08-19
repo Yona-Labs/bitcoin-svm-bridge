@@ -4,7 +4,7 @@ info:
   version: 1.0.0
   description: API to get a Bitcoin deposit address for a given Yona address and relay transactions.
 servers:
-  - url: http://139.59.156.238:8199
+  - url: https://txrelay.yona.network
 paths:
   /get_deposit_address:
     get:
