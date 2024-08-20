@@ -125,7 +125,7 @@ static TEST_CTX: Lazy<TestCtx> = Lazy::new(|| {
     println!("Init result {}", init_result);
 
     let deposit_result =
-        run_deposit(relay_config.clone(), 100 * LAMPORTS_PER_SOL).expect("run_deposit");
+        run_deposit(relay_config.clone(), 1000 * LAMPORTS_PER_SOL).expect("run_deposit");
     println!("Deposit result {}", init_result);
 
     thread::spawn({
@@ -167,7 +167,7 @@ fn program_initialized() {
         .get_balance(&deposit_account)
         .expect("deposit account get_balance");
 
-    assert_eq!(deposit_balance, 100 * LAMPORTS_PER_SOL + rent_exempt);
+    assert_eq!(deposit_balance, 1000 * LAMPORTS_PER_SOL + rent_exempt);
 }
 
 #[test]
@@ -191,6 +191,7 @@ fn relay_deposit_transaction() {
     )
     .expect("init bitcoin_client");
 
+    // this is small tx
     let deposit_tx_id = bitcoin_client
         .send_to_address(
             &deposit_address,
@@ -223,6 +224,35 @@ fn relay_deposit_transaction() {
         program.payer().key(),
     )
     .expect("relay_tx");
+
+    // give event some time to be processed
+    thread::sleep(Duration::from_secs(5));
+
+    let big_deposit_tx_id = bitcoin_client
+        .send_to_address(
+            &deposit_address,
+            Amount::from_int_btc(400),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("send_to_address");
+    println!("Big deposit tx id {}", big_deposit_tx_id);
+
+    // give tx some time to be mined
+    thread::sleep(Duration::from_secs(5));
+
+    relay_tx(
+        &program,
+        main_state,
+        &bitcoin_client,
+        big_deposit_tx_id,
+        program.payer().key(),
+    )
+    .expect("relay_tx big_deposit_tx_id");
 
     // give event some time to be processed
     thread::sleep(Duration::from_secs(5));

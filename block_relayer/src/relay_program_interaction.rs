@@ -1,5 +1,6 @@
 use crate::merkle::Proof;
 use anchor_client::anchor_lang::prelude::{AccountDeserialize, AccountMeta};
+use anchor_client::solana_sdk::compute_budget::ComputeBudgetInstruction;
 use anchor_client::solana_sdk::pubkey::Pubkey;
 use anchor_client::solana_sdk::signature::{Keypair, Signature};
 use anchor_client::ClientError as AnchorClientError;
@@ -9,12 +10,14 @@ use bitcoin::hex::DisplayHex;
 use bitcoin::{Block, BlockHash, Txid};
 use bitcoincore_rpc::{Client as BitcoinRpcClient, Error as BtcRpcError, RpcApi};
 use btc_relay::accounts::{
-    BridgeWithdraw, Deposit, Initialize, SubmitBlockHeaders, VerifyTransaction,
+    BridgeWithdraw, Deposit, FinalizeTx, InitBigTxVerify, Initialize, StoreTxBytes,
+    SubmitBlockHeaders, VerifyTransaction,
 };
 use btc_relay::instruction::{
     BridgeWithdraw as BridgeWithdrawInstruction, Deposit as DepositInstruction,
-    Initialize as InitializeInstruction, SubmitBlockHeaders as SubmitBlockHeadersInstruction,
-    VerifySmallTx as VerifySmallTxInstruction,
+    FinalizeTxProcessing, InitBigTxVerify as InitBigTxVerifyInstruction,
+    Initialize as InitializeInstruction, StoreTxBytes as StoreTxBytesInstruction,
+    SubmitBlockHeaders as SubmitBlockHeadersInstruction, VerifySmallTx as VerifySmallTxInstruction,
 };
 use btc_relay::state::MainState;
 use btc_relay::structs::{BlockHeader, CommittedBlockHeader};
@@ -242,28 +245,80 @@ pub fn relay_tx(
         .iter()
         .position(|in_block| *in_block == tx_id)
         .ok_or(RelayTxError::CouldNotFindTxidInBlock)?;
-    let proof = Proof::create(&block_info.tx, tx_pos);
+    let reversed_merkle_proof = Proof::create(&block_info.tx, tx_pos).to_reversed_vec();
 
     let (deposit_account, _) = Pubkey::find_program_address(&[b"solana_deposit"], &program.id());
 
-    let res = program
-        .request()
-        .accounts(VerifyTransaction {
-            signer: program.payer(),
-            main_state,
-            deposit_account,
-            mint_receiver,
-        })
-        .args(VerifySmallTxInstruction {
-            tx_bytes: transaction.hex,
-            confirmations: 1,
-            tx_index: tx_pos as u32,
-            commited_header,
-            reversed_merkle_proof: proof.to_reversed_vec(),
-        })
-        .send()?;
+    if transaction.hex.len() + 32 * reversed_merkle_proof.len() > 900 {
+        let tx_id = transaction.txid.to_byte_array();
 
-    Ok(res)
+        let (tx_account, _) = Pubkey::find_program_address(&[tx_id.as_slice()], &program.id());
+
+        program
+            .request()
+            .accounts(InitBigTxVerify {
+                signer: program.payer(),
+                tx_account,
+                system_program: anchor_client::solana_sdk::system_program::ID,
+                main_state,
+            })
+            .args(InitBigTxVerifyInstruction {
+                tx_id,
+                confirmations: 1,
+                tx_index: tx_pos as u32,
+                commited_header,
+                reversed_merkle_proof,
+                tx_size: transaction.hex.len() as u64,
+            })
+            .send()?;
+
+        for chunk in transaction.hex.chunks(800) {
+            program
+                .request()
+                .accounts(StoreTxBytes {
+                    signer: program.payer(),
+                    tx_account,
+                })
+                .args(StoreTxBytesInstruction {
+                    tx_id,
+                    bytes: chunk.to_vec(),
+                })
+                .send()?;
+        }
+
+        let res = program
+            .request()
+            .instruction(ComputeBudgetInstruction::set_compute_unit_limit(500_000))
+            .accounts(FinalizeTx {
+                signer: program.payer(),
+                tx_account,
+                deposit_account,
+                mint_receiver,
+            })
+            .args(FinalizeTxProcessing { tx_id })
+            .send()?;
+
+        Ok(res)
+    } else {
+        let res = program
+            .request()
+            .accounts(VerifyTransaction {
+                signer: program.payer(),
+                main_state,
+                deposit_account,
+                mint_receiver,
+            })
+            .args(VerifySmallTxInstruction {
+                tx_bytes: transaction.hex,
+                confirmations: 1,
+                tx_index: tx_pos as u32,
+                commited_header,
+                reversed_merkle_proof,
+            })
+            .send()?;
+
+        Ok(res)
+    }
 }
 
 pub fn bridge_withdraw(
