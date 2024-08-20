@@ -249,7 +249,7 @@ pub fn relay_tx(
 
     let (deposit_account, _) = Pubkey::find_program_address(&[b"solana_deposit"], &program.id());
 
-    if transaction.hex.len() + 32 * reversed_merkle_proof.len() > 900 {
+    if transaction.hex.len() + 32 * reversed_merkle_proof.len() > 800 {
         let tx_id = transaction.txid.to_byte_array();
 
         let (tx_account, _) = Pubkey::find_program_address(&[tx_id.as_slice()], &program.id());
