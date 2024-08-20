@@ -1,5 +1,8 @@
+use anchor_client::solana_sdk::native_token::LAMPORTS_PER_SOL;
 use block_relayer_lib::config::read_config;
-use block_relayer_lib::{relay_blocks_from_full_node, relay_transactions, run_init_program};
+use block_relayer_lib::{
+    relay_blocks_from_full_node, relay_transactions, run_deposit, run_init_program,
+};
 use clap::{Parser, Subcommand};
 use tokio::runtime::Runtime;
 
@@ -25,7 +28,11 @@ fn main() {
     let config = read_config().expect("Could not read config file");
 
     match cli.command {
-        RelayerCommand::InitDeposit => unimplemented!(),
+        RelayerCommand::InitDeposit => {
+            let result = run_deposit(config, 10_000 * LAMPORTS_PER_SOL)
+                .expect("Relay program initialization failed");
+            println!("Deposit tx signature {}", result);
+        }
         RelayerCommand::InitProgram => {
             let result = run_init_program(config).expect("Relay program initialization failed");
             println!("Initialization tx signature {}", result);
