@@ -5,10 +5,10 @@ seeds = false
 skip-lint = false
 
 [programs.localnet]
-btc_relay = "HY7CpkPjh5FgcU22RmEpqD6T5ZNWSgmwiTDYE5yHRfmf"
+btc_relay = "3YS97dtVcWjXUnR8JrZUm1oACYdjhoNQEuMM7y7VdvTa"
 
 [programs.mainnet]
-btc_relay = "HY7CpkPjh5FgcU22RmEpqD6T5ZNWSgmwiTDYE5yHRfmf"
+btc_relay = "3YS97dtVcWjXUnR8JrZUm1oACYdjhoNQEuMM7y7VdvTa"
 
 [registry]
 url = "https://api.apr.dev"

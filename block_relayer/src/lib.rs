@@ -256,11 +256,11 @@ async fn relay_tx_web_api(
 ) -> impl Responder {
     let tx_id = match Txid::from_str(&req.tx_id) {
         Ok(tx_id) => tx_id,
-        Err(_) => return HttpResponse::BadRequest().body("tx_id is not valid"),
+        Err(_) => return HttpResponse::BadRequest().json("tx_id is not valid"),
     };
     let mint_receiver = match Pubkey::from_str(&req.yona_address) {
         Ok(pubkey) => pubkey,
-        Err(_) => return HttpResponse::BadRequest().body("yona_address is not valid"),
+        Err(_) => return HttpResponse::BadRequest().json("yona_address is not valid"),
     };
 
     let relay_tx_res = spawn_blocking(move || {
@@ -276,10 +276,10 @@ async fn relay_tx_web_api(
     .expect("relay_tx to not panic");
 
     match relay_tx_res {
-        Ok(sig) => HttpResponse::Ok().json(format!("Relayed bitcoin tx {} to Yona: {sig}", tx_id)),
+        Ok(sig) => HttpResponse::Ok().json(format!("{sig}")),
         Err(e) => {
             error!("{e:?}");
-            HttpResponse::InternalServerError().body("Failed to relay bitcoin tx")
+            HttpResponse::InternalServerError().json("Failed to relay bitcoin tx")
         }
     }
 }

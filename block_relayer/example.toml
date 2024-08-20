@@ -1,12 +1,22 @@
+# The URL for the Bitcoin daemon
 bitcoind_url = "http://localhost:18443"
+# The HTTP URL for the Yona network's RPC endpoint.
 yona_http = "http://devnet-rpc.yona.network:8899"
+# The WebSocket URL for the Yona network.
 yona_ws = "ws://devnet-rpc.yona.network:8900"
+# The file path to the Yona keypair JSON file. It is relative to the current user's home directory.
 yona_keipair = ".config/solana/id.json"
 
+# Bitcoin RPC authorization section
 [bitcoin_auth]
+# Indicates that username/password authentication is being used.
 type = "userpass"
+# The username for Bitcoin daemon authentication.
 user = "test"
+# The password for Bitcoin daemon authentication.
 password = "test"
 
+# An alternative authentication method using a cookie file.
 #type = "cookie"
+# The path to the cookie file if cookie authentication is used.
 #path = "/bitcoin/regtest/.cookie"

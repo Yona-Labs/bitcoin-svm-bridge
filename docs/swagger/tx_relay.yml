@@ -1,0 +1,73 @@
+openapi: 3.0.0
+info:
+  title: Transaction relay API
+  version: 1.0.0
+  description: API to get a Bitcoin deposit address for a given Yona address and relay transactions.
+servers:
+  - url: https://txrelay.yona.network
+paths:
+  /get_deposit_address:
+    get:
+      summary: Get Bitcoin deposit address
+      description: Returns a Bitcoin address for depositing funds associated with a Yona address
+      parameters:
+        - in: query
+          name: yona_address
+          required: true
+          schema:
+            type: string
+          description: The Yona address to get a deposit address for
+          example: CgxQmREYVuwyPzHcH19iBQDtPjcHEWuzfRgWrtzepHLs
+      responses:
+        '200':
+          description: Successful response
+          content:
+            text/plain:
+              schema:
+                type: string
+              example: bcrt1qxc7mtegdy73gj2le8af08u3ms7cfsr47ewlajf8tldaq98jjzn7s0jvveq
+        '400':
+          description: Bad request (e.g., invalid Yona address)
+          content:
+            text/plain:
+              schema:
+                type: string
+              example: yona_address is not valid
+  /relay_tx:
+    post:
+      summary: Relay a transaction
+      description: Relays a transaction associated with a Yona address
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                tx_id:
+                  type: string
+                  description: The transaction ID to relay
+                yona_address:
+                  type: string
+                  description: The associated Yona address
+              required:
+                - tx_id
+                - yona_address
+            example:
+              tx_id: "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
+              yona_address: "CgxQmREYVuwyPzHcH19iBQDtPjcHEWuzfRgWrtzepHLs"
+      responses:
+        '200':
+          description: Transaction successfully relayed
+          content:
+            application/json:
+              schema:
+                type: string
+              example: 2LjpAwdh5r7vQ6eDwWAJ5rjoMXkxV921XKXkMdPXNjmCB3T3FcJcNFbJCG7FVxeR399H6vDTgMHjqdYHMcEJ12by
+        '400':
+          description: Bad request (e.g., invalid transaction ID or Yona address)
+          content:
+            application/json:
+              schema:
+                type: string
+              example: tx_id is not valid
