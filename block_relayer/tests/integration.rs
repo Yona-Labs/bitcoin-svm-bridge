@@ -7,7 +7,9 @@ use bitcoin::hex::FromHex;
 use bitcoin::{Address, Amount, Network};
 use bitcoincore_rpc::{Client as BitcoinRpcClient, RpcApi};
 use block_relayer_lib::config::{BitcoinAuth, RelayConfig};
-use block_relayer_lib::relay_program_interaction::{bridge_withdraw, relay_tx};
+use block_relayer_lib::relay_program_interaction::{
+    bridge_withdraw, deposit_tx_state, relay_tx, DepositTxState,
+};
 use block_relayer_lib::{
     get_yona_client, relay_blocks_from_full_node, run_deposit, run_init_program,
 };
@@ -69,9 +71,8 @@ static TEST_CTX: Lazy<TestCtx> = Lazy::new(|| {
         .spawn()
         .expect("spawn anchor localnet");
 
-    let image = GenericImage::new("artempikulin/esplora", "latest").with_wait_for(WaitFor::Log(
-        LogWaitStrategy::stderr("Electrum RPC server running on"),
-    ));
+    let image = GenericImage::new("artempikulin/esplora", "latest")
+        .with_wait_for(WaitFor::Log(LogWaitStrategy::stderr("CreateNewBlock()")));
 
     let host_mount_path = match env::var("GITHUB_ACTIONS") {
         Ok(_) => {
@@ -100,9 +101,6 @@ static TEST_CTX: Lazy<TestCtx> = Lazy::new(|| {
     let esplora_container = TEST_RUNTIME
         .block_on(container_req.start())
         .expect("Esplora container to start");
-
-    // give everything some additional time to initialize
-    thread::sleep(Duration::from_secs(10));
 
     // init program, deposit some amount and run block relay in background
     let bitcoind_url = match env::var("GITHUB_ACTIONS") {
@@ -215,6 +213,10 @@ fn relay_deposit_transaction() {
     // give tx some time to be mined
     thread::sleep(Duration::from_secs(5));
 
+    // verify state
+    let tx_state = deposit_tx_state(&program, deposit_tx_id).expect("deposit_tx_state");
+    assert!(matches!(tx_state, DepositTxState::NotRelayed));
+
     let (main_state, _) = Pubkey::find_program_address(&[b"state"], &btc_relay::id());
     relay_tx(
         &program,
@@ -227,6 +229,9 @@ fn relay_deposit_transaction() {
 
     // give event some time to be processed
     thread::sleep(Duration::from_secs(5));
+
+    let tx_state = deposit_tx_state(&program, deposit_tx_id).expect("deposit_tx_state");
+    assert!(matches!(tx_state, DepositTxState::Relayed));
 
     let big_deposit_tx_id = bitcoin_client
         .send_to_address(
@@ -245,6 +250,10 @@ fn relay_deposit_transaction() {
     // give tx some time to be mined
     thread::sleep(Duration::from_secs(5));
 
+    // verify state
+    let tx_state = deposit_tx_state(&program, big_deposit_tx_id).expect("deposit_tx_state");
+    assert!(matches!(tx_state, DepositTxState::NotRelayed));
+
     relay_tx(
         &program,
         main_state,
@@ -256,6 +265,10 @@ fn relay_deposit_transaction() {
 
     // give event some time to be processed
     thread::sleep(Duration::from_secs(5));
+
+    // verify state
+    let tx_state = deposit_tx_state(&program, big_deposit_tx_id).expect("deposit_tx_state");
+    assert!(matches!(tx_state, DepositTxState::Relayed));
 }
 
 #[test]

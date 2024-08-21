@@ -100,6 +100,9 @@ pub struct CloseForkAccount<'info> {
 }
 
 #[derive(Accounts)]
+#[instruction(
+    tx_id: [u8; 32]
+)]
 pub struct VerifyTransaction<'info> {
     #[account(mut)]
     pub signer: Signer<'info>,
@@ -110,8 +113,12 @@ pub struct VerifyTransaction<'info> {
     pub main_state: AccountLoader<'info, MainState>,
     #[account(mut, seeds = [b"solana_deposit".as_ref()], bump)]
     pub deposit_account: AccountLoader<'info, DepositState>,
+    /// We don't need to store transaction bytes here
+    #[account(init, seeds = [tx_id.as_slice()], bump, payer = signer, space = DepositTxState::space(0))]
+    pub tx_account: Account<'info, DepositTxState>,
     #[account(mut)]
     pub mint_receiver: SystemAccount<'info>,
+    pub system_program: Program<'info, System>,
 }
 
 #[derive(Accounts)]
@@ -146,8 +153,8 @@ pub struct InitBigTxVerify<'info> {
     #[account(mut)]
     pub signer: Signer<'info>,
     /// The program's account used to store transaction's data. This should be a derived PDA (Program Derived Address).
-    #[account(init, seeds = [tx_id.as_slice()], bump, payer = signer, space = 8 + 4 + tx_size as usize)]
-    pub tx_account: Account<'info, BigTxState>,
+    #[account(init, seeds = [tx_id.as_slice()], bump, payer = signer, space = DepositTxState::space(tx_size))]
+    pub tx_account: Account<'info, DepositTxState>,
     pub system_program: Program<'info, System>,
     #[account(
         seeds = [b"state".as_ref()],
@@ -166,7 +173,7 @@ pub struct StoreTxBytes<'info> {
     pub signer: Signer<'info>,
     /// The program's account used to store transaction's data. This should be a derived PDA (Program Derived Address).
     #[account(mut, seeds = [tx_id.as_slice()], bump)]
-    pub tx_account: Account<'info, BigTxState>,
+    pub tx_account: Account<'info, DepositTxState>,
 }
 
 #[derive(Accounts)]
@@ -179,7 +186,7 @@ pub struct FinalizeTx<'info> {
     pub signer: Signer<'info>,
     /// The program's account used to store transaction's data. This should be a derived PDA (Program Derived Address).
     #[account(mut, seeds = [tx_id.as_slice()], bump)]
-    pub tx_account: Account<'info, BigTxState>,
+    pub tx_account: Account<'info, DepositTxState>,
     #[account(mut, seeds = [b"solana_deposit".as_ref()], bump)]
     pub deposit_account: AccountLoader<'info, DepositState>,
     #[account(mut)]

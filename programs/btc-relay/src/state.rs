@@ -10,10 +10,24 @@ pub struct DepositState {
     pub bump: u8,
 }
 
+#[repr(C)]
+#[derive(AnchorDeserialize, AnchorSerialize, Clone, Copy)]
+pub enum TxState {
+    VerificationInitialized,
+    VerificationComplete,
+}
+
 #[account]
 #[repr(C)]
-pub struct BigTxState {
+pub struct DepositTxState {
     pub tx_bytes: Vec<u8>,
+    pub state: TxState,
+}
+
+impl DepositTxState {
+    pub fn space(tx_size: u64) -> usize {
+        8 + 4 + tx_size as usize + 4
+    }
 }
 
 #[account(zero_copy)]

@@ -10,6 +10,7 @@ use std::str::FromStr;
 use errors::*;
 use events::*;
 use instructions::*;
+use state::TxState;
 use structs::*;
 use utils::{bridge_mint_amount, BITCOIN_DEPOSIT_PUBKEY};
 
@@ -21,7 +22,7 @@ pub mod state;
 pub mod structs;
 pub mod utils;
 
-declare_id!("33tEfBs82iH2ZN26AP1quJnKB5vMaU7AgWRcDqank1ih");
+declare_id!("HJCw6qgHtr5k7PKatpDa7SkePTCAFRmXBNkrbWFjGS8J");
 
 #[program]
 pub mod btc_relay {
@@ -383,12 +384,21 @@ pub mod btc_relay {
     // before the instructions that depend on transaction verification
     pub fn verify_small_tx(
         ctx: Context<VerifyTransaction>,
+        tx_id: [u8; 32],
         tx_bytes: Vec<u8>,
         confirmations: u32,
         tx_index: u32,
         reversed_merkle_proof: Vec<[u8; 32]>,
         commited_header: CommittedBlockHeader,
     ) -> Result<()> {
+        require!(
+            matches!(
+                ctx.accounts.tx_account.state,
+                TxState::VerificationInitialized
+            ),
+            RelayErrorCode::DepositTxAlreadyVerified
+        );
+
         let block_height = commited_header.blockheight;
 
         let main_state = ctx.accounts.main_state.load()?;
@@ -412,9 +422,13 @@ pub mod btc_relay {
 
         require!(amount_to_transfer > 0, RelayErrorCode::NoDepositOutputs);
 
-        let tx_id = bitcoin_tx.compute_txid();
-        let computed_merkle =
-            utils::compute_merkle(tx_id.as_ref(), tx_index, reversed_merkle_proof);
+        let computed_tx_id = bitcoin_tx.compute_txid();
+        require!(
+            tx_id == computed_tx_id.to_byte_array(),
+            RelayErrorCode::UnexpectedTxId
+        );
+
+        let computed_merkle = utils::compute_merkle(&tx_id, tx_index, reversed_merkle_proof);
 
         require!(
             computed_merkle == commited_header.header.merkle_root,
@@ -431,10 +445,13 @@ pub mod btc_relay {
         **ctx.accounts.mint_receiver.try_borrow_mut_lamports()? += sol_amount;
 
         emit!(DepositTxVerified {
-            tx_id: tx_id.to_byte_array(),
+            tx_id,
             yona_address: *ctx.accounts.mint_receiver.key,
             bitcoin_pubkey: FromHex::from_hex(BITCOIN_DEPOSIT_PUBKEY).unwrap(),
         });
+
+        ctx.accounts.tx_account.state = TxState::VerificationComplete;
+
         Ok(())
     }
 
@@ -515,6 +532,9 @@ pub mod btc_relay {
             RelayErrorCode::MerkleRoot
         );
 
+        ctx.accounts.tx_account.state = TxState::VerificationInitialized;
+        ctx.accounts.tx_account.tx_bytes = Vec::with_capacity(tx_size as usize);
+
         Ok(())
     }
 
@@ -528,6 +548,14 @@ pub mod btc_relay {
     }
 
     pub fn finalize_tx_processing(ctx: Context<FinalizeTx>, tx_id: [u8; 32]) -> Result<()> {
+        require!(
+            matches!(
+                ctx.accounts.tx_account.state,
+                TxState::VerificationInitialized
+            ),
+            RelayErrorCode::DepositTxAlreadyVerified
+        );
+
         let bitcoin_tx =
             Transaction::consensus_decode(&mut ctx.accounts.tx_account.tx_bytes.as_slice())
                 .map_err(|_| RelayErrorCode::TxDecodeFailure)?;
@@ -550,6 +578,8 @@ pub mod btc_relay {
             .try_borrow_mut_lamports()? -= sol_amount;
 
         **ctx.accounts.mint_receiver.try_borrow_mut_lamports()? += sol_amount;
+
+        ctx.accounts.tx_account.state = TxState::VerificationComplete;
         Ok(())
     }
 

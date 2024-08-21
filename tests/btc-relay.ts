@@ -257,10 +257,20 @@ describe("btc-relay", () => {
             program.programId
         );
 
+        const txId = "7c04665a396c766c68306c04ea3700975777fc8c198f352c92c2ebe0acb48443";
+
+        const txIdBytes = Buffer.from(txId, "hex").reverse();
+
+        const [txAccount] = anchor.web3.PublicKey.findProgramAddressSync(
+            [txIdBytes],
+            program.programId
+        );
+
         const receiverBalanceBefore = await provider.connection.getBalance(mintReceiver);
 
         const ix = await program.methods
             .verifySmallTx(
+                txIdBytes,
                 Buffer.from(txBytes, "hex"),
                 1,
                 position,
@@ -271,7 +281,9 @@ describe("btc-relay", () => {
                 signer: signer.publicKey,
                 mainState: mainStateKey,
                 depositAccount,
-                mintReceiver
+                mintReceiver,
+                txAccount,
+                systemProgram: SystemProgram.programId,
             })
             .signers([signer])
             .instruction();
@@ -303,6 +315,10 @@ describe("btc-relay", () => {
         const expectedBalance = receiverBalanceBefore + 4999153000;
         chai.expect(receiverBalanceAfter).eq(expectedBalance);
 
+        // should not allow to verify the same transaction again
+        await chai.expect(provider.sendAndConfirm(tx, [signer], {
+            skipPreflight: false
+        })).to.be.eventually.rejectedWith("already in use");
     });
 
     it("Submit big tx", async () => {
@@ -429,6 +445,11 @@ describe("btc-relay", () => {
         const receiverBalanceAfter = await provider.connection.getBalance(mintReceiver);
         const expectedBalance = receiverBalanceBefore + LAMPORTS_PER_SOL;
         chai.expect(receiverBalanceAfter).eq(expectedBalance);
+
+        // should not allow to verify the same transaction again
+        await chai.expect(provider.sendAndConfirm(finalizeTx, [signer], {
+            skipPreflight: false
+        })).to.be.eventually.rejectedWith("DepositTxAlreadyVerified");
     });
 
     it("Bridge withdraw", async () => {

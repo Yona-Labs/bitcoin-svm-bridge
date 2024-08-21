@@ -40,4 +40,6 @@ pub enum RelayErrorCode {
     TxDecodeFailure,
     #[msg("Invalid Bitcoin address!")]
     InvalidBitcoinAddress,
+    #[msg("Deposit transaction has been already verified!")]
+    DepositTxAlreadyVerified,
 }

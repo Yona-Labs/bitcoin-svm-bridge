@@ -285,6 +285,33 @@ async fn relay_tx_web_api(
 }
 
 #[derive(Deserialize)]
+struct TxStateRequest {
+    tx_id: String,
+}
+
+async fn get_state_tx_web_api(
+    data: web::Data<RelayTransactionsState>,
+    req: web::Query<TxStateRequest>,
+) -> impl Responder {
+    let tx_id = match Txid::from_str(&req.tx_id) {
+        Ok(tx_id) => tx_id,
+        Err(_) => return HttpResponse::BadRequest().json("tx_id is not valid"),
+    };
+
+    let deposit_tx_state_res = spawn_blocking(move || deposit_tx_state(&data.relay_program, tx_id))
+        .await
+        .expect("deposit_tx_state to not panic");
+
+    match deposit_tx_state_res {
+        Ok(state) => HttpResponse::Ok().json(format!("{state}")),
+        Err(e) => {
+            error!("{e:?}");
+            HttpResponse::InternalServerError().json("Failed to get deposit tx state")
+        }
+    }
+}
+
+#[derive(Deserialize)]
 struct GetDepositAddrReq {
     yona_address: String,
 }
@@ -302,8 +329,6 @@ async fn get_deposit_address(req: web::Query<GetDepositAddrReq>) -> impl Respond
         yona_address.to_bytes(),
         bitcoin_pubkey.pubkey_hash().to_byte_array(),
     );
-
-    info!("{script:?}");
 
     let deposit_address = Address::p2wsh(script.as_script(), Network::Regtest);
 
@@ -336,6 +361,7 @@ pub async fn relay_transactions(config: RelayConfig) {
             .app_data(app_state.clone())
             .route("/relay_tx", web::post().to(relay_tx_web_api))
             .route("/get_deposit_address", web::get().to(get_deposit_address))
+            .route("/get_tx_state", web::get().to(get_state_tx_web_api))
     })
     .bind("0.0.0.0:8199")
     .expect("Couldn't bind to 0.0.0.0:8199")

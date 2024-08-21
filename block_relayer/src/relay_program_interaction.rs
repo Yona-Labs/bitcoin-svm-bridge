@@ -19,9 +19,10 @@ use btc_relay::instruction::{
     Initialize as InitializeInstruction, StoreTxBytes as StoreTxBytesInstruction,
     SubmitBlockHeaders as SubmitBlockHeadersInstruction, VerifySmallTx as VerifySmallTxInstruction,
 };
-use btc_relay::state::MainState;
+use btc_relay::state::{DepositTxState as ProgramDepositTxState, MainState, TxState};
 use btc_relay::structs::{BlockHeader, CommittedBlockHeader};
 use log::{debug, info};
+use std::fmt;
 use std::sync::Arc;
 
 pub(crate) fn reconstruct_commited_header(
@@ -221,7 +222,7 @@ pub fn relay_tx(
         .rpc()
         .get_account(&main_state)
         .map_err(AnchorClientError::from)?;
-    let main_state_data = MainState::try_deserialize_unchecked(&mut &raw_account.data[..8128])
+    let main_state_data = MainState::try_deserialize(&mut &raw_account.data[..8128])
         .map_err(AnchorClientError::from)?;
 
     let transaction = bitcoind_client.get_raw_transaction_info(&tx_id, None)?;
@@ -248,12 +249,10 @@ pub fn relay_tx(
     let reversed_merkle_proof = Proof::create(&block_info.tx, tx_pos).to_reversed_vec();
 
     let (deposit_account, _) = Pubkey::find_program_address(&[b"solana_deposit"], &program.id());
+    let tx_id = transaction.txid.to_byte_array();
+    let (tx_account, _) = Pubkey::find_program_address(&[tx_id.as_slice()], &program.id());
 
     if transaction.hex.len() + 32 * reversed_merkle_proof.len() > 800 {
-        let tx_id = transaction.txid.to_byte_array();
-
-        let (tx_account, _) = Pubkey::find_program_address(&[tx_id.as_slice()], &program.id());
-
         program
             .request()
             .accounts(InitBigTxVerify {
@@ -306,9 +305,12 @@ pub fn relay_tx(
                 signer: program.payer(),
                 main_state,
                 deposit_account,
+                tx_account,
                 mint_receiver,
+                system_program: anchor_client::solana_sdk::system_program::ID,
             })
             .args(VerifySmallTxInstruction {
+                tx_id,
                 tx_bytes: transaction.hex,
                 confirmations: 1,
                 tx_index: tx_pos as u32,
@@ -342,4 +344,35 @@ pub fn bridge_withdraw(
         .send()?;
 
     Ok(res)
+}
+
+pub enum DepositTxState {
+    NotRelayed,
+    Relayed,
+}
+
+impl fmt::Display for DepositTxState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            DepositTxState::NotRelayed => write!(f, "NotRelayed"),
+            DepositTxState::Relayed => write!(f, "Relayed"),
+        }
+    }
+}
+
+pub fn deposit_tx_state(
+    program: &Program<Arc<Keypair>>,
+    tx_id: Txid,
+) -> Result<DepositTxState, AnchorClientError> {
+    let (tx_account, _) =
+        Pubkey::find_program_address(&[tx_id.to_byte_array().as_slice()], &program.id());
+
+    match program.account::<ProgramDepositTxState>(tx_account) {
+        Ok(state) => match state.state {
+            TxState::VerificationInitialized => Ok(DepositTxState::NotRelayed),
+            TxState::VerificationComplete => Ok(DepositTxState::Relayed),
+        },
+        Err(AnchorClientError::AccountNotFound) => Ok(DepositTxState::NotRelayed),
+        Err(e) => Err(e),
+    }
 }
