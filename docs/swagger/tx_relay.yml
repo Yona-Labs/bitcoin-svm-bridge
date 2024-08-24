@@ -22,14 +22,14 @@ paths:
         '200':
           description: Successful response
           content:
-            text/plain:
+            application/json:
               schema:
                 type: string
               example: bcrt1qxc7mtegdy73gj2le8af08u3ms7cfsr47ewlajf8tldaq98jjzn7s0jvveq
         '400':
           description: Bad request (e.g., invalid Yona address)
           content:
-            text/plain:
+            application/json:
               schema:
                 type: string
               example: yona_address is not valid

@@ -319,7 +319,7 @@ struct GetDepositAddrReq {
 async fn get_deposit_address(req: web::Query<GetDepositAddrReq>) -> impl Responder {
     let yona_address = match Pubkey::from_str(&req.yona_address) {
         Ok(pubkey) => pubkey,
-        Err(_) => return HttpResponse::BadRequest().body("yona_address is not valid"),
+        Err(_) => return HttpResponse::BadRequest().json("yona_address is not valid"),
     };
 
     let bitcoin_pubkey =
@@ -332,7 +332,7 @@ async fn get_deposit_address(req: web::Query<GetDepositAddrReq>) -> impl Respond
 
     let deposit_address = Address::p2wsh(script.as_script(), Network::Regtest);
 
-    HttpResponse::Ok().body(deposit_address.to_string())
+    HttpResponse::Ok().json(deposit_address.to_string())
 }
 
 pub async fn relay_transactions(config: RelayConfig) {
