@@ -1,6 +1,11 @@
 use anchor_client::anchor_lang::prelude::Pubkey;
-use anchor_client::anchor_lang::Key;
+use anchor_client::anchor_lang::{AnchorDeserialize, Discriminator, Key};
+use anchor_client::solana_client::rpc_client::GetConfirmedSignaturesForAddress2Config;
+use anchor_client::solana_client::rpc_config::RpcTransactionConfig;
+use anchor_client::solana_sdk::commitment_config::CommitmentConfig;
 use anchor_client::solana_sdk::native_token::LAMPORTS_PER_SOL;
+use anchor_client::solana_sdk::signature::Signature;
+use base64::Engine;
 use bitcoin::hashes::hash160::Hash as Hash160;
 use bitcoin::hashes::Hash;
 use bitcoin::hex::FromHex;
@@ -18,9 +23,11 @@ use bollard::Docker;
 use btc_relay::events::{DepositTxVerified, Withdrawal};
 use btc_relay::utils::{bridge_deposit_script, BITCOIN_DEPOSIT_PUBKEY};
 use once_cell::sync::Lazy;
+use solana_transaction_status::option_serializer::OptionSerializer;
 use std::env;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
+use std::str::FromStr;
 use std::sync::Mutex;
 use std::thread;
 use std::time::Duration;
@@ -53,10 +60,10 @@ static TEST_CTX: Lazy<TestCtx> = Lazy::new(|| {
         link: false,
     };
 
-    if let Err(_) =
+    if let Err(e) =
         TEST_RUNTIME.block_on(docker.remove_container(ESPLORA_CONTAINER, Some(rm_options)))
     {
-        // just do nothing here
+        println!("{e:?}");
     };
 
     let current_dir = env::current_dir().unwrap();
@@ -72,6 +79,9 @@ static TEST_CTX: Lazy<TestCtx> = Lazy::new(|| {
         .expect("spawn anchor localnet");
 
     let image = GenericImage::new("artempikulin/esplora", "latest")
+        .with_wait_for(WaitFor::Duration {
+            length: Duration::from_secs(30),
+        })
         .with_wait_for(WaitFor::Log(LogWaitStrategy::stderr("CreateNewBlock()")));
 
     let host_mount_path = match env::var("GITHUB_ACTIONS") {
@@ -269,6 +279,48 @@ fn relay_deposit_transaction() {
     // verify state
     let tx_state = deposit_tx_state(&program, big_deposit_tx_id).expect("deposit_tx_state");
     assert!(matches!(tx_state, DepositTxState::Relayed));
+
+    let config = GetConfirmedSignaturesForAddress2Config {
+        before: None,
+        until: None,
+        limit: None,
+        commitment: Some(CommitmentConfig::confirmed()),
+    };
+    let transactions_history = program
+        .rpc()
+        .get_signatures_for_address_with_config(&btc_relay::id(), config)
+        .expect("get_signatures_for_address");
+
+    for transaction in transactions_history {
+        let signature = Signature::from_str(&transaction.signature).unwrap();
+        let config = RpcTransactionConfig {
+            encoding: None,
+            commitment: Some(CommitmentConfig::confirmed()),
+            max_supported_transaction_version: None,
+        };
+        let last_transaction = program
+            .rpc()
+            .get_transaction_with_config(&signature, config)
+            .unwrap();
+
+        let messages = match last_transaction.transaction.meta.unwrap().log_messages {
+            OptionSerializer::Some(messages) => messages,
+            _ => panic!("log_messages are not some"),
+        };
+
+        const EVENT_PREFIX: &str = "Program data: ";
+        let deposit_events: Vec<_> = messages
+            .iter()
+            .filter_map(|msg| msg.strip_prefix(EVENT_PREFIX))
+            .filter_map(|maybe_base64| base64::prelude::BASE64_STANDARD.decode(maybe_base64).ok())
+            .filter(|bytes| bytes.starts_with(&DepositTxVerified::discriminator()))
+            .map(|b| DepositTxVerified::try_from_slice(&b[8..]).unwrap())
+            .collect();
+
+        for event in deposit_events {
+            println!("{:?}, {}", event.tx_id, event.yona_address);
+        }
+    }
 }
 
 #[test]
@@ -286,4 +338,46 @@ fn process_withdrawal() {
 
     // give event some time to be processed
     thread::sleep(Duration::from_secs(5));
+
+    let config = GetConfirmedSignaturesForAddress2Config {
+        before: None,
+        until: None,
+        limit: None,
+        commitment: Some(CommitmentConfig::confirmed()),
+    };
+    let transactions_history = program
+        .rpc()
+        .get_signatures_for_address_with_config(&btc_relay::id(), config)
+        .expect("get_signatures_for_address");
+
+    for transaction in transactions_history {
+        let signature = Signature::from_str(&transaction.signature).unwrap();
+        let config = RpcTransactionConfig {
+            encoding: None,
+            commitment: Some(CommitmentConfig::confirmed()),
+            max_supported_transaction_version: None,
+        };
+        let last_transaction = program
+            .rpc()
+            .get_transaction_with_config(&signature, config)
+            .unwrap();
+
+        let messages = match last_transaction.transaction.meta.unwrap().log_messages {
+            OptionSerializer::Some(messages) => messages,
+            _ => panic!("log_messages are not some"),
+        };
+
+        const EVENT_PREFIX: &str = "Program data: ";
+        let withdraw_events: Vec<_> = messages
+            .iter()
+            .filter_map(|msg| msg.strip_prefix(EVENT_PREFIX))
+            .filter_map(|maybe_base64| base64::prelude::BASE64_STANDARD.decode(maybe_base64).ok())
+            .filter(|bytes| bytes.starts_with(&Withdrawal::discriminator()))
+            .map(|b| Withdrawal::try_from_slice(&b[8..]).unwrap())
+            .collect();
+
+        for event in withdraw_events {
+            println!("{}, {}", event.amount, event.bitcoin_address);
+        }
+    }
 }

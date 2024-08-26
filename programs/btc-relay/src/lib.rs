@@ -580,6 +580,13 @@ pub mod btc_relay {
         **ctx.accounts.mint_receiver.try_borrow_mut_lamports()? += sol_amount;
 
         ctx.accounts.tx_account.state = TxState::VerificationComplete;
+
+        emit!(DepositTxVerified {
+            tx_id,
+            yona_address: *ctx.accounts.mint_receiver.key,
+            bitcoin_pubkey: FromHex::from_hex(BITCOIN_DEPOSIT_PUBKEY).unwrap(),
+        });
+
         Ok(())
     }
 
