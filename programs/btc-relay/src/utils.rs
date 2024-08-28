@@ -1,18 +1,13 @@
 use anchor_lang::{prelude::*, solana_program::clock};
 use bitcoin::blockdata::opcodes::all::*;
-use bitcoin::hashes::hash160::Hash as Hash160;
 use bitcoin::hashes::sha256d;
 use bitcoin::hashes::Hash;
-use bitcoin::hex::FromHex;
 use bitcoin::script::Builder;
 use bitcoin::{Address, Network, Transaction};
 // Utilities for block header verification
 use crate::arrayutils;
 use crate::errors::*;
 use crate::structs::*;
-
-pub const BITCOIN_DEPOSIT_PUBKEY: &str =
-    "0288e64b7fd0bcdaf5c0081d068f6a6f7b6ea0036ebabf3daabc74c2c7e1191e2d";
 
 // Returns current timestamp read from Solana's on-chain clock
 pub fn now_ts() -> Result<u32> {
@@ -333,16 +328,19 @@ pub fn bridge_deposit_script(solana_pub: [u8; 32], bitcoin_pubkey_hash: [u8; 20]
     Builder::new()
         .push_slice(solana_pub)
         .push_opcode(OP_DROP)
+        .push_opcode(OP_DUP)
         .push_opcode(OP_HASH160)
         .push_slice(bitcoin_pubkey_hash)
         .push_opcode(OP_EQUALVERIFY)
         .push_opcode(OP_CHECKSIG)
 }
 
-pub fn bridge_mint_amount(bitcoin_tx: &Transaction, solana_pub: [u8; 32]) -> u64 {
-    let bridge_pubkey: [u8; 33] = FromHex::from_hex(BITCOIN_DEPOSIT_PUBKEY).unwrap();
-    let pubkey_hash = Hash160::hash(&bridge_pubkey);
-    let expected_script = bridge_deposit_script(solana_pub, pubkey_hash.to_byte_array());
+pub fn bridge_mint_amount(
+    bitcoin_tx: &Transaction,
+    solana_pub: [u8; 32],
+    bridge_pubkey_hash: [u8; 20],
+) -> u64 {
+    let expected_script = bridge_deposit_script(solana_pub, bridge_pubkey_hash);
     let expected_script_pubkey =
         Address::p2wsh(expected_script.as_script(), Network::Regtest).script_pubkey();
 

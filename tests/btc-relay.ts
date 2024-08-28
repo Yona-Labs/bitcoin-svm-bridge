@@ -14,12 +14,15 @@ const commitment: anchor.web3.Commitment = "confirmed";
 
 const mainStateSeed = "state";
 const headerSeed = "header";
-const PRUNING_FACTOR = 250;
-const accountSize = 8 + 4 + 4 + 4 + 32 + 8 + 4 + (PRUNING_FACTOR * 32);
 
 function dblSha256(data: Buffer) {
     const hash1 = createHash("sha256").update(data).digest();
     return createHash("sha256").update(hash1).digest();
+}
+
+function hash160(data: Buffer) {
+    const hash1 = createHash("sha256").update(data).digest();
+    return createHash("ripemd160").update(hash1).digest();
 }
 
 const provider = anchor.AnchorProvider.env();
@@ -48,6 +51,8 @@ const header = {
 };
 
 const mintReceiver = new anchor.web3.PublicKey("5Xy6zEA64yENXm9Zz5xDmTdB8t9cQpNaD3ZwNLBeiSc5");
+
+const BITCOIN_PUBKEY = Buffer.from("0288e64b7fd0bcdaf5c0081d068f6a6f7b6ea0036ebabf3daabc74c2c7e1191e2d", "hex");
 
 let initCommittedHeader;
 
@@ -114,7 +119,8 @@ describe("btc-relay", () => {
                 12999,
                 Array(32).fill(0),
                 1721024744,
-                Array(10).fill(1721024744)
+                Array(10).fill(1721024744),
+                hash160(BITCOIN_PUBKEY)
             )
             .accounts({
                 signer: signer.publicKey,

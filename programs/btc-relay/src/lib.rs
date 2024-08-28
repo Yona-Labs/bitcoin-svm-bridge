@@ -2,7 +2,6 @@ use anchor_lang::prelude::*;
 use bitcoin::address::Address;
 use bitcoin::consensus::Decodable;
 use bitcoin::hashes::Hash;
-use bitcoin::hex::FromHex;
 use bitcoin::Network;
 use bitcoin::Transaction;
 use std::str::FromStr;
@@ -12,7 +11,7 @@ use events::*;
 use instructions::*;
 use state::TxState;
 use structs::*;
-use utils::{bridge_mint_amount, BITCOIN_DEPOSIT_PUBKEY};
+use utils::bridge_mint_amount;
 
 mod arrayutils;
 mod errors;
@@ -37,12 +36,15 @@ pub mod btc_relay {
         chain_work: [u8; 32],
         last_diff_adjustment: u32,
         prev_block_timestamps: [u32; 10],
+        deposit_pubkey_hash: [u8; 20],
     ) -> Result<()> {
         let main_state = &mut ctx.accounts.main_state.load_init()?;
 
         main_state.last_diff_adjustment = last_diff_adjustment;
         main_state.block_height = block_height;
         main_state.chain_work = chain_work;
+        main_state.deposit_pubkey_hash = [0; 32];
+        main_state.deposit_pubkey_hash[..20].copy_from_slice(&deposit_pubkey_hash);
 
         main_state.fork_counter = 0;
 
@@ -417,8 +419,15 @@ pub mod btc_relay {
         let bitcoin_tx = Transaction::consensus_decode(&mut tx_bytes.as_slice())
             .map_err(|_| RelayErrorCode::TxDecodeFailure)?;
 
-        let amount_to_transfer =
-            bridge_mint_amount(&bitcoin_tx, ctx.accounts.mint_receiver.key().to_bytes());
+        let deposit_pubkey_hash = main_state.deposit_pubkey_hash[..20]
+            .try_into()
+            .expect("20 bytes");
+
+        let amount_to_transfer = bridge_mint_amount(
+            &bitcoin_tx,
+            ctx.accounts.mint_receiver.key().to_bytes(),
+            deposit_pubkey_hash,
+        );
 
         require!(amount_to_transfer > 0, RelayErrorCode::NoDepositOutputs);
 
@@ -447,7 +456,7 @@ pub mod btc_relay {
         emit!(DepositTxVerified {
             tx_id,
             yona_address: *ctx.accounts.mint_receiver.key,
-            bitcoin_pubkey: FromHex::from_hex(BITCOIN_DEPOSIT_PUBKEY).unwrap(),
+            deposit_pubkey_hash,
         });
 
         ctx.accounts.tx_account.state = TxState::VerificationComplete;
@@ -564,8 +573,16 @@ pub mod btc_relay {
             tx_id == bitcoin_tx.compute_txid().as_ref(),
             RelayErrorCode::UnexpectedTxId
         );
-        let amount_to_transfer =
-            bridge_mint_amount(&bitcoin_tx, ctx.accounts.mint_receiver.key().to_bytes());
+
+        let deposit_pubkey_hash = ctx.accounts.main_state.load()?.deposit_pubkey_hash[..20]
+            .try_into()
+            .expect("20 bytes");
+
+        let amount_to_transfer = bridge_mint_amount(
+            &bitcoin_tx,
+            ctx.accounts.mint_receiver.key().to_bytes(),
+            deposit_pubkey_hash,
+        );
 
         require!(amount_to_transfer > 0, RelayErrorCode::NoDepositOutputs);
 
@@ -584,7 +601,7 @@ pub mod btc_relay {
         emit!(DepositTxVerified {
             tx_id,
             yona_address: *ctx.accounts.mint_receiver.key,
-            bitcoin_pubkey: FromHex::from_hex(BITCOIN_DEPOSIT_PUBKEY).unwrap(),
+            deposit_pubkey_hash,
         });
 
         Ok(())

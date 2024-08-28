@@ -44,7 +44,6 @@ pub struct SubmitBlockHeaders<'info> {
 pub struct SubmitShortForkHeaders<'info> {
     #[account(mut)]
     pub signer: Signer<'info>,
-
     #[account(
         mut,
         seeds = [b"state".as_ref()],
@@ -62,14 +61,12 @@ pub struct SubmitShortForkHeaders<'info> {
 pub struct SubmitForkHeaders<'info> {
     #[account(mut)]
     pub signer: Signer<'info>,
-
     #[account(
         mut,
         seeds = [b"state".as_ref()],
         bump
     )]
     pub main_state: AccountLoader<'info, MainState>,
-
     #[account(
         init_if_needed,
         seeds = [b"fork".as_ref(), fork_id.to_le_bytes().as_ref(), signer.key.to_bytes().as_ref()],
@@ -78,7 +75,6 @@ pub struct SubmitForkHeaders<'info> {
         space = ForkState::space()
     )]
     pub fork_state: AccountLoader<'info, ForkState>,
-
     pub system_program: Program<'info, System>,
 }
 
@@ -191,6 +187,11 @@ pub struct FinalizeTx<'info> {
     pub deposit_account: AccountLoader<'info, DepositState>,
     #[account(mut)]
     pub mint_receiver: SystemAccount<'info>,
+    #[account(
+        seeds = [b"state".as_ref()],
+        bump
+    )]
+    pub main_state: AccountLoader<'info, MainState>,
 }
 
 #[derive(Accounts)]

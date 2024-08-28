@@ -1,26 +1,41 @@
 pub mod config;
 mod merkle;
 pub mod relay_program_interaction;
+pub mod utxo_db;
 
 use crate::config::RelayConfig;
 use crate::relay_program_interaction::*;
+use crate::utxo_db::{Utxo, UtxoDatabase};
 use actix_cors::Cors;
 use actix_web::{web, App, HttpResponse, HttpServer, Responder};
-use anchor_client::anchor_lang::{AccountDeserialize, Id};
+use anchor_client::anchor_lang::{AccountDeserialize, AnchorDeserialize, Discriminator, Id};
+use anchor_client::solana_client::rpc_client::GetConfirmedSignaturesForAddress2Config;
+use anchor_client::solana_client::rpc_config::RpcTransactionConfig;
 use anchor_client::solana_sdk::commitment_config::CommitmentConfig;
 use anchor_client::solana_sdk::pubkey::Pubkey;
 use anchor_client::solana_sdk::signature::{read_keypair_file, Keypair, Signature};
 use anchor_client::{Client as AnchorClient, ClientError as AnchorClientError, Cluster, Program};
+use base64::Engine;
+use bitcoin::absolute::LockTime;
 use bitcoin::hashes::Hash;
 use bitcoin::hex::DisplayHex;
-use bitcoin::{Address, BlockHash, Network, PublicKey, Txid};
+use bitcoin::key::Secp256k1;
+use bitcoin::secp256k1::{All, Message};
+use bitcoin::sighash::SighashCache;
+use bitcoin::transaction::Version;
+use bitcoin::{
+    Address, Amount, BlockHash, EcdsaSighashType, Network, OutPoint, PrivateKey, PublicKey, Script,
+    Sequence, Transaction, TxIn, TxOut, Txid, Witness,
+};
 use bitcoincore_rpc::{Client as BitcoinRpcClient, Error as BtcError, RpcApi};
-use btc_relay::events::StoreHeader;
+use btc_relay::events::{DepositTxVerified, StoreHeader, Withdrawal};
 use btc_relay::program::BtcRelay;
 use btc_relay::state::MainState;
-use btc_relay::utils::{bridge_deposit_script, BITCOIN_DEPOSIT_PUBKEY};
+use btc_relay::utils::bridge_deposit_script;
 use log::{debug, error, info};
 use serde::Deserialize;
+use solana_transaction_status::option_serializer::OptionSerializer;
+use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -69,7 +84,7 @@ pub fn relay_blocks_from_full_node(config: RelayConfig, wait_for_new_block: u64)
 
         // TODO there seems to be an allocation of 8 unneeded bytes, which makes deserialization fail
         let main_state_data =
-            match MainState::try_deserialize_unchecked(&mut &raw_account.data[..8128]) {
+            match MainState::try_deserialize_unchecked(&mut &raw_account.data[..8160]) {
                 Ok(data) => data,
                 Err(e) => {
                     error!("Error {e} on main_state deserialization attempt");
@@ -195,7 +210,10 @@ impl From<InitError> for InitProgramError {
 }
 
 /// Initializes BTC relay program using the current Bitcoin tip (latest block)
-pub fn run_init_program(config: RelayConfig) -> Result<Signature, InitProgramError> {
+pub fn run_init_program(
+    config: RelayConfig,
+    deposit_pubkey_hash: [u8; 20],
+) -> Result<Signature, InitProgramError> {
     let yona_client = get_yona_client(&config).map_err(InitProgramError::CouldNotInitYonaClient)?;
 
     let bitcoind_client = BitcoinRpcClient::new(&config.bitcoind_url, config.bitcoin_auth.into())?;
@@ -214,6 +232,7 @@ pub fn run_init_program(config: RelayConfig) -> Result<Signature, InitProgramErr
         &bitcoind_client,
         last_block,
         tip.height as u32,
+        deposit_pubkey_hash,
     )?)
 }
 
@@ -241,6 +260,7 @@ pub fn run_deposit(config: RelayConfig, amount: u64) -> Result<Signature, Deposi
 struct RelayTransactionsState {
     relay_program: Program<Arc<Keypair>>,
     bitcoin_rpc_client: BitcoinRpcClient,
+    deposit_pubkey_hash: [u8; 20],
     main_state: Pubkey,
 }
 
@@ -316,26 +336,23 @@ struct GetDepositAddrReq {
     yona_address: String,
 }
 
-async fn get_deposit_address(req: web::Query<GetDepositAddrReq>) -> impl Responder {
+async fn get_deposit_address(
+    data: web::Data<RelayTransactionsState>,
+    req: web::Query<GetDepositAddrReq>,
+) -> impl Responder {
     let yona_address = match Pubkey::from_str(&req.yona_address) {
         Ok(pubkey) => pubkey,
         Err(_) => return HttpResponse::BadRequest().json("yona_address is not valid"),
     };
 
-    let bitcoin_pubkey =
-        PublicKey::from_str(BITCOIN_DEPOSIT_PUBKEY).expect("Valid bitcoin public key");
-
-    let script = bridge_deposit_script(
-        yona_address.to_bytes(),
-        bitcoin_pubkey.pubkey_hash().to_byte_array(),
-    );
+    let script = bridge_deposit_script(yona_address.to_bytes(), data.deposit_pubkey_hash);
 
     let deposit_address = Address::p2wsh(script.as_script(), Network::Regtest);
 
     HttpResponse::Ok().json(deposit_address.to_string())
 }
 
-pub async fn relay_transactions(config: RelayConfig) {
+pub async fn relay_transactions(config: RelayConfig, deposit_pubkey_hash: [u8; 20]) {
     let yona_client = get_yona_client(&config).expect("Couldn't create Yona client");
 
     let bitcoin_rpc_client =
@@ -352,6 +369,7 @@ pub async fn relay_transactions(config: RelayConfig) {
         relay_program,
         bitcoin_rpc_client,
         main_state,
+        deposit_pubkey_hash,
     });
 
     // Start HTTP server
@@ -368,4 +386,191 @@ pub async fn relay_transactions(config: RelayConfig) {
     .run()
     .await
     .expect("HTTP server hasn't gracefully stop");
+}
+
+pub fn process_bridge_events(
+    config: RelayConfig,
+    utxo_db: UtxoDatabase,
+    bridge_privkey: PrivateKey,
+    bridge_pubkey: PublicKey,
+    secp_context: Secp256k1<All>,
+) {
+    let yona_client = get_yona_client(&config).expect("Couldn't create Yona client");
+
+    let bitcoin_rpc_client =
+        BitcoinRpcClient::new(&config.bitcoind_url, config.bitcoin_auth.into())
+            .expect("Couldn't create Bitcoin client");
+
+    let program = yona_client
+        .program(btc_relay::id())
+        .expect("Couldn't create relay program instance");
+
+    loop {
+        let config = GetConfirmedSignaturesForAddress2Config {
+            before: None,
+            until: None,
+            limit: Some(1000),
+            commitment: Some(CommitmentConfig::confirmed()),
+        };
+
+        let transactions_history = program
+            .rpc()
+            .get_signatures_for_address_with_config(&btc_relay::id(), config)
+            .expect("get_signatures_for_address");
+
+        for transaction in transactions_history {
+            let signature = Signature::from_str(&transaction.signature).unwrap();
+            let config = RpcTransactionConfig {
+                encoding: None,
+                commitment: Some(CommitmentConfig::confirmed()),
+                max_supported_transaction_version: None,
+            };
+            let last_transaction = program
+                .rpc()
+                .get_transaction_with_config(&signature, config)
+                .unwrap();
+
+            let messages = match last_transaction.transaction.meta.unwrap().log_messages {
+                OptionSerializer::Some(messages) => messages,
+                _ => panic!("log_messages are not some"),
+            };
+
+            const EVENT_PREFIX: &str = "Program data: ";
+            messages
+                .iter()
+                .filter_map(|msg| msg.strip_prefix(EVENT_PREFIX))
+                .filter_map(|maybe_base64| {
+                    base64::prelude::BASE64_STANDARD.decode(maybe_base64).ok()
+                })
+                .for_each(|bytes| {
+                    if bytes.starts_with(&DepositTxVerified::discriminator()) {
+                        let event = DepositTxVerified::try_from_slice(&bytes[8..]).unwrap();
+                        let bitcoin_tx = bitcoin_rpc_client
+                            .get_raw_transaction(&Txid::from_byte_array(event.tx_id), None)
+                            .expect("get_raw_transaction");
+                        debug!("Got deposit Bitcoin tx {bitcoin_tx:?}");
+                        let deposit_script = bridge_deposit_script(
+                            event.yona_address.to_bytes(),
+                            event.deposit_pubkey_hash,
+                        );
+                        let expected_script_pubkey =
+                            Address::p2wsh(deposit_script.as_script(), Network::Regtest)
+                                .script_pubkey();
+
+                        for (i, out) in bitcoin_tx.output.into_iter().enumerate() {
+                            if out.script_pubkey == expected_script_pubkey {
+                                let utxo = Utxo {
+                                    txid: event.tx_id,
+                                    vout: i as u32,
+                                    amount: out.value.to_sat(),
+                                    script_pubkey: expected_script_pubkey.to_bytes(),
+                                    yona_address: event.yona_address.to_string(),
+                                    bridge_pubkey: vec![],
+                                    redeem_script: deposit_script.as_bytes().into(),
+                                };
+                                if let Err(e) = utxo_db.insert_utxo(&utxo) {
+                                    error!("Error on UTXO insertion {e:?}");
+                                }
+                            }
+                        }
+                    } else if bytes.starts_with(&Withdrawal::discriminator()) {
+                        let event = Withdrawal::try_from_slice(&bytes[8..]).unwrap();
+                        debug!("Got withdrawal event {event:?}");
+
+                        let available_utxos = match utxo_db.get_all_utxos() {
+                            Ok(utxos) => utxos,
+                            Err(e) => {
+                                error!("Error {e:?} on getting utxos");
+                                return;
+                            }
+                        };
+                        let address = Address::from_str(&event.bitcoin_address)
+                            .unwrap()
+                            .require_network(Network::Regtest)
+                            .unwrap();
+                        let tx_out = TxOut {
+                            value: Amount::from_sat(event.amount),
+                            script_pubkey: address.script_pubkey(),
+                        };
+
+                        let mut input = vec![];
+                        let mut collected_amount = 0;
+                        let mut inputs_utxos = vec![];
+
+                        for utxo in available_utxos {
+                            let previous_output = OutPoint {
+                                txid: Txid::from_byte_array(utxo.txid),
+                                vout: utxo.vout,
+                            };
+                            input.push(TxIn {
+                                previous_output,
+                                script_sig: Default::default(),
+                                sequence: Sequence::MAX,
+                                witness: Default::default(),
+                            });
+
+                            collected_amount += utxo.amount;
+                            inputs_utxos.push(utxo);
+
+                            if collected_amount >= event.amount + 1000 {
+                                break;
+                            }
+                        }
+
+                        let change = collected_amount - event.amount - 1000;
+
+                        let change_out = TxOut {
+                            value: Amount::from_sat(change),
+                            script_pubkey: address.script_pubkey(),
+                        };
+
+                        let tx = Transaction {
+                            version: Version::TWO,
+                            lock_time: LockTime::ZERO,
+                            input,
+                            output: vec![tx_out, change_out],
+                        };
+
+                        let mut sig_hash_cache = SighashCache::new(tx);
+                        let mut witnesses = vec![];
+
+                        for (i, utxo) in inputs_utxos.into_iter().enumerate() {
+                            let sig_hash = sig_hash_cache
+                                .p2wsh_signature_hash(
+                                    i,
+                                    Script::from_bytes(&utxo.redeem_script),
+                                    Amount::from_sat(utxo.amount),
+                                    EcdsaSighashType::All,
+                                )
+                                .unwrap();
+
+                            let message = Message::from(sig_hash);
+                            let signature =
+                                secp_context.sign_ecdsa(&message, &bridge_privkey.inner);
+
+                            let mut sig = signature.serialize_der().to_vec();
+                            sig.push(EcdsaSighashType::All as u8);
+
+                            let mut witness = Witness::new();
+                            witness.push(sig);
+                            witness.push(bridge_pubkey.to_bytes());
+                            witness.push(utxo.redeem_script);
+                            witnesses.push(witness);
+                        }
+
+                        let mut tx = sig_hash_cache.into_transaction();
+                        for (input, witness) in tx.input.iter_mut().zip(witnesses) {
+                            input.witness = witness;
+                        }
+
+                        match bitcoin_rpc_client.send_raw_transaction(&tx) {
+                            Ok(id) => info!("Processed bridge withdrawal, Bitcoin tx id {}", id),
+                            Err(e) => error!("Error {e:?} on broadcasting Bitcoin tx"),
+                        }
+                    }
+                });
+        }
+
+        thread::sleep(Duration::from_secs(1));
+    }
 }

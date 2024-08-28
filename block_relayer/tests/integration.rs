@@ -6,23 +6,32 @@ use anchor_client::solana_sdk::commitment_config::CommitmentConfig;
 use anchor_client::solana_sdk::native_token::LAMPORTS_PER_SOL;
 use anchor_client::solana_sdk::signature::Signature;
 use base64::Engine;
-use bitcoin::hashes::hash160::Hash as Hash160;
+use bitcoin::absolute::LockTime;
 use bitcoin::hashes::Hash;
-use bitcoin::hex::FromHex;
-use bitcoin::{Address, Amount, Network};
+use bitcoin::key::{PrivateKey, Secp256k1};
+use bitcoin::secp256k1::{All, Message};
+use bitcoin::sighash::SighashCache;
+use bitcoin::transaction::Version;
+use bitcoin::{
+    Address, Amount, EcdsaSighashType, Network, OutPoint, ScriptBuf, Sequence, Transaction, TxIn,
+    TxOut, Witness,
+};
 use bitcoincore_rpc::{Client as BitcoinRpcClient, RpcApi};
 use block_relayer_lib::config::{BitcoinAuth, RelayConfig};
 use block_relayer_lib::relay_program_interaction::{
     bridge_withdraw, deposit_tx_state, relay_tx, DepositTxState,
 };
+use block_relayer_lib::utxo_db::UtxoDatabase;
 use block_relayer_lib::{
-    get_yona_client, relay_blocks_from_full_node, run_deposit, run_init_program,
+    get_yona_client, process_bridge_events, relay_blocks_from_full_node, run_deposit,
+    run_init_program,
 };
 use bollard::container::RemoveContainerOptions;
 use bollard::Docker;
-use btc_relay::events::{DepositTxVerified, Withdrawal};
-use btc_relay::utils::{bridge_deposit_script, BITCOIN_DEPOSIT_PUBKEY};
+use btc_relay::events::Withdrawal;
+use btc_relay::utils::bridge_deposit_script;
 use once_cell::sync::Lazy;
+use rusqlite::Connection;
 use solana_transaction_status::option_serializer::OptionSerializer;
 use std::env;
 use std::path::PathBuf;
@@ -45,6 +54,8 @@ struct TestCtx {
     anchor_localnet_handle: Mutex<Child>,
     current_dir: PathBuf,
     relay_config: RelayConfig,
+    secp256k1: Secp256k1<All>,
+    bridge_privkey: PrivateKey,
 }
 
 static TEST_RUNTIME: Lazy<Runtime> =
@@ -129,7 +140,12 @@ static TEST_CTX: Lazy<TestCtx> = Lazy::new(|| {
         yona_keipair: current_dir.join("../anchor.json").display().to_string(),
     };
 
-    let init_result = run_init_program(relay_config.clone()).expect("run_init_program");
+    let bridge_privkey = PrivateKey::generate(Network::Regtest);
+    let secp256k1 = Secp256k1::new();
+    let pubkey = bridge_privkey.public_key(&secp256k1);
+
+    let init_result = run_init_program(relay_config.clone(), pubkey.pubkey_hash().to_byte_array())
+        .expect("run_init_program");
     println!("Init result {}", init_result);
 
     let deposit_result =
@@ -141,12 +157,29 @@ static TEST_CTX: Lazy<TestCtx> = Lazy::new(|| {
         move || relay_blocks_from_full_node(relay_config, 1)
     });
 
+    thread::spawn({
+        let relay_config = relay_config.clone();
+        let bridge_privkey = bridge_privkey.clone();
+        let secp256k1 = secp256k1.clone();
+        move || {
+            process_bridge_events(
+                relay_config,
+                UtxoDatabase::new_from_conn(Connection::open_in_memory().unwrap()).unwrap(),
+                bridge_privkey,
+                pubkey,
+                secp256k1,
+            )
+        }
+    });
+
     TestCtx {
         docker,
         esplora_container,
         anchor_localnet_handle: Mutex::new(anchor_localnet_handle),
         current_dir,
         relay_config,
+        bridge_privkey,
+        secp256k1,
     }
 });
 
@@ -183,8 +216,11 @@ fn relay_deposit_transaction() {
     // send it first on Bitcoin
     let client = get_yona_client(&TEST_CTX.relay_config).expect("get_yona_client");
     let program = client.program(btc_relay::id()).expect("btc_relay program");
-    let bridge_pubkey: [u8; 33] = FromHex::from_hex(BITCOIN_DEPOSIT_PUBKEY).unwrap();
-    let pubkey_hash = Hash160::hash(&bridge_pubkey);
+
+    let pubkey_hash = TEST_CTX
+        .bridge_privkey
+        .public_key(&TEST_CTX.secp256k1)
+        .pubkey_hash();
 
     let output_script = bridge_deposit_script(
         program.payer().key().to_bytes(),
@@ -213,12 +249,6 @@ fn relay_deposit_transaction() {
         )
         .expect("send_to_address");
     println!("Deposit tx id {}", deposit_tx_id);
-
-    let _deposit_sub_handle = program
-        .on(|ctx, event: DepositTxVerified| {
-            println!("DepositTxVerified signature {}", ctx.signature)
-        })
-        .expect("Subscribe to DepositTxVerified");
 
     // give tx some time to be mined
     thread::sleep(Duration::from_secs(5));
@@ -280,104 +310,87 @@ fn relay_deposit_transaction() {
     let tx_state = deposit_tx_state(&program, big_deposit_tx_id).expect("deposit_tx_state");
     assert!(matches!(tx_state, DepositTxState::Relayed));
 
-    let config = GetConfirmedSignaturesForAddress2Config {
-        before: None,
-        until: None,
-        limit: None,
-        commitment: Some(CommitmentConfig::confirmed()),
+    // trying to spend the deposit output
+
+    /*
+    let deposit_transaction = bitcoin_client
+        .get_raw_transaction_info(&deposit_tx_id, None)
+        .unwrap();
+
+    let output = deposit_transaction
+        .vout
+        .iter()
+        .find(|out| out.script_pub_key.hex == deposit_address.script_pubkey().to_bytes())
+        .unwrap();
+
+    let outpoint = OutPoint {
+        txid: deposit_tx_id,
+        vout: output.n,
     };
-    let transactions_history = program
-        .rpc()
-        .get_signatures_for_address_with_config(&btc_relay::id(), config)
-        .expect("get_signatures_for_address");
 
-    for transaction in transactions_history {
-        let signature = Signature::from_str(&transaction.signature).unwrap();
-        let config = RpcTransactionConfig {
-            encoding: None,
-            commitment: Some(CommitmentConfig::confirmed()),
-            max_supported_transaction_version: None,
-        };
-        let last_transaction = program
-            .rpc()
-            .get_transaction_with_config(&signature, config)
-            .unwrap();
+    let address = Address::p2pkh(
+        TEST_CTX.bridge_privkey.public_key(&TEST_CTX.secp256k1),
+        Network::Regtest,
+    );
 
-        let messages = match last_transaction.transaction.meta.unwrap().log_messages {
-            OptionSerializer::Some(messages) => messages,
-            _ => panic!("log_messages are not some"),
-        };
+    let input = TxIn {
+        previous_output: outpoint,
+        script_sig: ScriptBuf::new(),
+        sequence: Sequence::MAX,
+        witness: Witness::new(),
+    };
 
-        const EVENT_PREFIX: &str = "Program data: ";
-        let deposit_events: Vec<_> = messages
-            .iter()
-            .filter_map(|msg| msg.strip_prefix(EVENT_PREFIX))
-            .filter_map(|maybe_base64| base64::prelude::BASE64_STANDARD.decode(maybe_base64).ok())
-            .filter(|bytes| bytes.starts_with(&DepositTxVerified::discriminator()))
-            .map(|b| DepositTxVerified::try_from_slice(&b[8..]).unwrap())
-            .collect();
+    let value = Amount::from_btc(0.99).unwrap();
 
-        for event in deposit_events {
-            println!("{:?}, {}", event.tx_id, event.yona_address);
-        }
-    }
-}
+    let output = TxOut {
+        value,
+        script_pubkey: address.script_pubkey(),
+    };
 
-#[test]
-fn process_withdrawal() {
-    let client = get_yona_client(&TEST_CTX.relay_config).expect("get_yona_client");
-    let program = client.program(btc_relay::id()).expect("btc_relay program");
+    let tx = Transaction {
+        version: Version::TWO,
+        lock_time: LockTime::ZERO,
+        input: vec![input],
+        output: vec![output],
+    };
 
-    let _withdraw_sub_handle = program
-        .on(|ctx, event: Withdrawal| println!("Withdrawal signature {}", ctx.signature))
-        .expect("Subscribe to Withdrawal");
+    let mut sig_hash_cache = SighashCache::new(tx);
+
+    let sig_hash = sig_hash_cache
+        .p2wsh_signature_hash(
+            0,
+            output_script.as_script(),
+            Amount::ONE_BTC,
+            EcdsaSighashType::All,
+        )
+        .unwrap();
+
+    let message = Message::from(sig_hash);
+
+    let signature = TEST_CTX
+        .secp256k1
+        .sign_ecdsa(&message, &TEST_CTX.bridge_privkey.inner);
+
+    let mut sig = signature.serialize_der().to_vec();
+    sig.push(EcdsaSighashType::All as u8);
+
+    let pubkey = TEST_CTX.bridge_privkey.public_key(&TEST_CTX.secp256k1);
+
+    let mut tx = sig_hash_cache.into_transaction();
+    tx.input[0].witness.push(sig);
+    tx.input[0].witness.push(pubkey.to_bytes());
+    tx.input[0].witness.push(output_script.as_bytes());
+
+    bitcoin_client.send_raw_transaction(&tx).unwrap();
+
+    thread::sleep(Duration::from_secs(5));
+
+     */
 
     let bitcoin_address = "bcrt1qm3zxtz0evpc0r5ch3az2ulx0cxce9yjkcs73cq".into();
 
     bridge_withdraw(&program, LAMPORTS_PER_SOL, bitcoin_address).expect("bridge_withdraw");
 
     // give event some time to be processed
-    thread::sleep(Duration::from_secs(5));
-
-    let config = GetConfirmedSignaturesForAddress2Config {
-        before: None,
-        until: None,
-        limit: None,
-        commitment: Some(CommitmentConfig::confirmed()),
-    };
-    let transactions_history = program
-        .rpc()
-        .get_signatures_for_address_with_config(&btc_relay::id(), config)
-        .expect("get_signatures_for_address");
-
-    for transaction in transactions_history {
-        let signature = Signature::from_str(&transaction.signature).unwrap();
-        let config = RpcTransactionConfig {
-            encoding: None,
-            commitment: Some(CommitmentConfig::confirmed()),
-            max_supported_transaction_version: None,
-        };
-        let last_transaction = program
-            .rpc()
-            .get_transaction_with_config(&signature, config)
-            .unwrap();
-
-        let messages = match last_transaction.transaction.meta.unwrap().log_messages {
-            OptionSerializer::Some(messages) => messages,
-            _ => panic!("log_messages are not some"),
-        };
-
-        const EVENT_PREFIX: &str = "Program data: ";
-        let withdraw_events: Vec<_> = messages
-            .iter()
-            .filter_map(|msg| msg.strip_prefix(EVENT_PREFIX))
-            .filter_map(|maybe_base64| base64::prelude::BASE64_STANDARD.decode(maybe_base64).ok())
-            .filter(|bytes| bytes.starts_with(&Withdrawal::discriminator()))
-            .map(|b| Withdrawal::try_from_slice(&b[8..]).unwrap())
-            .collect();
-
-        for event in withdraw_events {
-            println!("{}, {}", event.amount, event.bitcoin_address);
-        }
-    }
+    thread::sleep(Duration::from_secs(20));
 }

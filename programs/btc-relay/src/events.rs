@@ -25,14 +25,16 @@ pub struct ChainReorg {
 }
 
 #[event]
+#[derive(Debug)]
 pub struct Withdrawal {
     pub amount: u64,
     pub bitcoin_address: String,
 }
 
 #[event]
+#[derive(Debug)]
 pub struct DepositTxVerified {
     pub tx_id: [u8; 32],
     pub yona_address: Pubkey,
-    pub bitcoin_pubkey: [u8; 33],
+    pub deposit_pubkey_hash: [u8; 20],
 }

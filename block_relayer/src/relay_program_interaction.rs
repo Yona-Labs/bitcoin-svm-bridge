@@ -96,6 +96,7 @@ pub fn init_program(
     bitcoind_client: &BitcoinRpcClient,
     block: Block,
     block_height: u32,
+    deposit_pubkey_hash: [u8; 20],
 ) -> Result<Signature, InitError> {
     let (main_state, _) = Pubkey::find_program_address(&[b"state"], &program.id());
 
@@ -136,6 +137,7 @@ pub fn init_program(
             chain_work: [0; 32],
             last_diff_adjustment: yona_block_header.timestamp,
             prev_block_timestamps,
+            deposit_pubkey_hash,
         })
         .send()?;
 
@@ -222,7 +224,7 @@ pub fn relay_tx(
         .rpc()
         .get_account(&main_state)
         .map_err(AnchorClientError::from)?;
-    let main_state_data = MainState::try_deserialize(&mut &raw_account.data[..8128])
+    let main_state_data = MainState::try_deserialize(&mut &raw_account.data[..8160])
         .map_err(AnchorClientError::from)?;
 
     let transaction = bitcoind_client.get_raw_transaction_info(&tx_id, None)?;
@@ -293,6 +295,7 @@ pub fn relay_tx(
                 tx_account,
                 deposit_account,
                 mint_receiver,
+                main_state,
             })
             .args(FinalizeTxProcessing { tx_id })
             .send()?;

@@ -33,27 +33,36 @@ impl DepositTxState {
 #[account(zero_copy)]
 #[repr(C)]
 pub struct MainState {
-    pub start_height: u32,         // Start block height of the current ring buffer
-    pub last_diff_adjustment: u32, // Timestamp of the last difficulty adjustment block
-    pub block_height: u32,         // Current block height
-    pub total_blocks: u32,         // Total number of blocks validated
-
-    pub fork_counter: u64, // Used for indexing fork PDA's
-
-    pub tip_commit_hash: [u8; 32], // Block header data commitment hash for the latest block - blockchain tip
-    pub tip_block_hash: [u8; 32],  // Blockhash of the latest block - blockchain tip
-
-    pub chain_work: [u8; 32],               // Accumulated work of the chain
-    pub block_commitments: [[u8; 32]; 250], // Ring buffer storing block data commitments (sha256 hashes of CommittedBlockHeader data)
+    /// Start block height of the current ring buffer
+    pub start_height: u32,
+    /// Timestamp of the last difficulty adjustment block
+    pub last_diff_adjustment: u32,
+    /// Current block height
+    pub block_height: u32,
+    /// Total number of blocks validated
+    pub total_blocks: u32,
+    /// Used for indexing fork PDA's
+    pub fork_counter: u64,
+    /// The public key hash of address managing bridge UTXOs on Bitcoin
+    /// Using 32 bytes to fix padding for zero copy
+    pub deposit_pubkey_hash: [u8; 32],
+    /// Block header data commitment hash for the latest block - blockchain tip
+    pub tip_commit_hash: [u8; 32],
+    /// Blockhash of the latest block - blockchain tip
+    pub tip_block_hash: [u8; 32],
+    /// Accumulated work of the chain
+    pub chain_work: [u8; 32],
+    /// Ring buffer storing block data commitments (sha256 hashes of CommittedBlockHeader data)
+    pub block_commitments: [[u8; 32]; 250],
 }
 
 impl MainState {
     pub fn space() -> usize {
-        8 + 8 + 4 + 4 + 4 + 32 + 8 + 4 + 32 + 32 + (PRUNING_FACTOR * 32)
+        8 + 8 + 4 + 4 + 4 + 32 + 8 + 4 + 32 + 32 + (PRUNING_FACTOR * 32) + 32
     }
 
-    // Gets the position on the ring buffer corresponding to the block_height,
-    // returns 0 or PRUNING_FACTOR in edge cases
+    /// Gets the position on the ring buffer corresponding to the block_height,
+    /// returns 0 or PRUNING_FACTOR in edge cases
     pub fn get_position(&self, block_height: u32) -> usize {
         if self.start_height <= block_height {
             let pos = block_height - self.start_height;
@@ -70,10 +79,9 @@ impl MainState {
         }
     }
 
-    //Get's the commitment for a block_height,
-    // returning empty array [0; 32] in edge cases
+    /// Gets the commitment for a block_height, returning empty array [0; 32] in edge cases
     pub fn get_commitment(&self, block_height: u32) -> [u8; 32] {
-        //Check block_height more than than tip
+        // Check block_height more than tip
         if block_height > self.block_height {
             return [0; 32];
         }

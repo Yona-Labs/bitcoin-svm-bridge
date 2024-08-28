@@ -1,4 +1,7 @@
 use anchor_client::solana_sdk::native_token::LAMPORTS_PER_SOL;
+use bitcoin::hashes::hash160::Hash as Hash160;
+use bitcoin::hashes::Hash;
+use bitcoin::hex::FromHex;
 use block_relayer_lib::config::read_config;
 use block_relayer_lib::{
     relay_blocks_from_full_node, relay_transactions, run_deposit, run_init_program,
@@ -9,9 +12,9 @@ use tokio::runtime::Runtime;
 #[derive(Subcommand)]
 enum RelayerCommand {
     InitDeposit,
-    InitProgram,
+    InitProgram { deposit_pubkey: String },
     RelayBlocks,
-    RelayTransactions,
+    RelayTransactions { deposit_pubkey: String },
 }
 
 #[derive(Parser)]
@@ -33,14 +36,23 @@ fn main() {
                 .expect("Relay program initialization failed");
             println!("Deposit tx signature {}", result);
         }
-        RelayerCommand::InitProgram => {
-            let result = run_init_program(config).expect("Relay program initialization failed");
+        RelayerCommand::InitProgram { deposit_pubkey } => {
+            let bridge_pubkey: [u8; 33] =
+                FromHex::from_hex(&deposit_pubkey).expect("Failed to decode pubkey");
+            let pubkey_hash = Hash160::hash(&bridge_pubkey);
+
+            let result = run_init_program(config, pubkey_hash.to_byte_array())
+                .expect("Relay program initialization failed");
             println!("Initialization tx signature {}", result);
         }
         RelayerCommand::RelayBlocks => relay_blocks_from_full_node(config, 30),
-        RelayerCommand::RelayTransactions => {
+        RelayerCommand::RelayTransactions { deposit_pubkey } => {
+            let bridge_pubkey: [u8; 33] =
+                FromHex::from_hex(&deposit_pubkey).expect("Failed to decode pubkey");
+            let pubkey_hash = Hash160::hash(&bridge_pubkey);
+
             let runtime = Runtime::new().expect("tokio runtime to be created");
-            runtime.block_on(relay_transactions(config));
+            runtime.block_on(relay_transactions(config, pubkey_hash.to_byte_array()));
         }
     }
 }
