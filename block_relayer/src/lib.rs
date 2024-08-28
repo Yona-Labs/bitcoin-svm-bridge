@@ -24,8 +24,8 @@ use bitcoin::secp256k1::{All, Message};
 use bitcoin::sighash::SighashCache;
 use bitcoin::transaction::Version;
 use bitcoin::{
-    Address, Amount, BlockHash, EcdsaSighashType, Network, OutPoint, PrivateKey, PublicKey, Script,
-    Sequence, Transaction, TxIn, TxOut, Txid, Witness,
+    Address, Amount, BlockHash, CompressedPublicKey, EcdsaSighashType, KnownHrp, Network, OutPoint,
+    PrivateKey, PublicKey, Script, Sequence, Transaction, TxIn, TxOut, Txid, Witness,
 };
 use bitcoincore_rpc::{Client as BitcoinRpcClient, Error as BtcError, RpcApi};
 use btc_relay::events::{DepositTxVerified, StoreHeader, Withdrawal};
@@ -488,8 +488,10 @@ pub fn process_bridge_events(
                             .unwrap()
                             .require_network(Network::Regtest)
                             .unwrap();
+
+                        let bitcoin_amount = event.amount / 10;
                         let tx_out = TxOut {
-                            value: Amount::from_sat(event.amount),
+                            value: Amount::from_sat(bitcoin_amount),
                             script_pubkey: address.script_pubkey(),
                         };
 
@@ -512,16 +514,22 @@ pub fn process_bridge_events(
                             collected_amount += utxo.amount;
                             inputs_utxos.push(utxo);
 
-                            if collected_amount >= event.amount + 1000 {
+                            if collected_amount >= bitcoin_amount + 1000 {
                                 break;
                             }
                         }
 
-                        let change = collected_amount - event.amount - 1000;
+                        let change = collected_amount - bitcoin_amount - 1000;
 
                         let change_out = TxOut {
                             value: Amount::from_sat(change),
-                            script_pubkey: address.script_pubkey(),
+                            script_pubkey: Address::p2wpkh(
+                                &bridge_pubkey
+                                    .try_into()
+                                    .expect("bridge_pubkey is compressed"),
+                                KnownHrp::Regtest,
+                            )
+                            .script_pubkey(),
                         };
 
                         let tx = Transaction {

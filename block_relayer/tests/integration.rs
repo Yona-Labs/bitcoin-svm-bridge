@@ -16,6 +16,7 @@ use bitcoin::{
     Address, Amount, EcdsaSighashType, Network, OutPoint, ScriptBuf, Sequence, Transaction, TxIn,
     TxOut, Witness,
 };
+use bitcoincore_rpc::json::{ImportDescriptors, Timestamp};
 use bitcoincore_rpc::{Client as BitcoinRpcClient, RpcApi};
 use block_relayer_lib::config::{BitcoinAuth, RelayConfig};
 use block_relayer_lib::relay_program_interaction::{
@@ -251,7 +252,7 @@ fn relay_deposit_transaction() {
     println!("Deposit tx id {}", deposit_tx_id);
 
     // give tx some time to be mined
-    thread::sleep(Duration::from_secs(5));
+    thread::sleep(Duration::from_secs(10));
 
     // verify state
     let tx_state = deposit_tx_state(&program, deposit_tx_id).expect("deposit_tx_state");
@@ -288,7 +289,7 @@ fn relay_deposit_transaction() {
     println!("Big deposit tx id {}", big_deposit_tx_id);
 
     // give tx some time to be mined
-    thread::sleep(Duration::from_secs(5));
+    thread::sleep(Duration::from_secs(10));
 
     // verify state
     let tx_state = deposit_tx_state(&program, big_deposit_tx_id).expect("deposit_tx_state");
@@ -310,87 +311,23 @@ fn relay_deposit_transaction() {
     let tx_state = deposit_tx_state(&program, big_deposit_tx_id).expect("deposit_tx_state");
     assert!(matches!(tx_state, DepositTxState::Relayed));
 
-    // trying to spend the deposit output
-
-    /*
-    let deposit_transaction = bitcoin_client
-        .get_raw_transaction_info(&deposit_tx_id, None)
-        .unwrap();
-
-    let output = deposit_transaction
-        .vout
-        .iter()
-        .find(|out| out.script_pub_key.hex == deposit_address.script_pubkey().to_bytes())
-        .unwrap();
-
-    let outpoint = OutPoint {
-        txid: deposit_tx_id,
-        vout: output.n,
-    };
-
-    let address = Address::p2pkh(
-        TEST_CTX.bridge_privkey.public_key(&TEST_CTX.secp256k1),
-        Network::Regtest,
-    );
-
-    let input = TxIn {
-        previous_output: outpoint,
-        script_sig: ScriptBuf::new(),
-        sequence: Sequence::MAX,
-        witness: Witness::new(),
-    };
-
-    let value = Amount::from_btc(0.99).unwrap();
-
-    let output = TxOut {
-        value,
-        script_pubkey: address.script_pubkey(),
-    };
-
-    let tx = Transaction {
-        version: Version::TWO,
-        lock_time: LockTime::ZERO,
-        input: vec![input],
-        output: vec![output],
-    };
-
-    let mut sig_hash_cache = SighashCache::new(tx);
-
-    let sig_hash = sig_hash_cache
-        .p2wsh_signature_hash(
-            0,
-            output_script.as_script(),
-            Amount::ONE_BTC,
-            EcdsaSighashType::All,
-        )
-        .unwrap();
-
-    let message = Message::from(sig_hash);
-
-    let signature = TEST_CTX
-        .secp256k1
-        .sign_ecdsa(&message, &TEST_CTX.bridge_privkey.inner);
-
-    let mut sig = signature.serialize_der().to_vec();
-    sig.push(EcdsaSighashType::All as u8);
-
-    let pubkey = TEST_CTX.bridge_privkey.public_key(&TEST_CTX.secp256k1);
-
-    let mut tx = sig_hash_cache.into_transaction();
-    tx.input[0].witness.push(sig);
-    tx.input[0].witness.push(pubkey.to_bytes());
-    tx.input[0].witness.push(output_script.as_bytes());
-
-    bitcoin_client.send_raw_transaction(&tx).unwrap();
-
-    thread::sleep(Duration::from_secs(5));
-
-     */
-
-    let bitcoin_address = "bcrt1qm3zxtz0evpc0r5ch3az2ulx0cxce9yjkcs73cq".into();
-
-    bridge_withdraw(&program, LAMPORTS_PER_SOL, bitcoin_address).expect("bridge_withdraw");
+    let bitcoin_address = "bcrt1qm3zxtz0evpc0r5ch3az2ulx0cxce9yjkcs73cq".to_string();
+    bridge_withdraw(&program, LAMPORTS_PER_SOL, bitcoin_address.clone()).expect("bridge_withdraw");
 
     // give event some time to be processed
-    thread::sleep(Duration::from_secs(20));
+    thread::sleep(Duration::from_secs(10));
+
+    let explorer_url = format!("http://127.0.0.1:8094/regtest/api/address/{bitcoin_address}");
+    let response: serde_json::Value = reqwest::blocking::get(explorer_url)
+        .unwrap()
+        .json()
+        .unwrap();
+
+    let funded = response["chain_stats"]["funded_txo_sum"].as_u64().unwrap();
+    let spent = response["chain_stats"]["spent_txo_sum"].as_u64().unwrap();
+
+    let actual_balance = Amount::from_sat(funded - spent);
+    let expected_balance = Amount::ONE_BTC;
+
+    assert_eq!(expected_balance, actual_balance);
 }

@@ -363,8 +363,6 @@ describe("btc-relay", () => {
             .signers([signer])
             .instruction();
 
-        // console.log("IX: ", ix);
-
         // to increase CU limit
         // .add(ComputeBudgetProgram.setComputeUnitLimit({
         //    units: 1_400_000, // Set the desired number of compute units
