@@ -24,18 +24,18 @@ use bitcoin::secp256k1::{All, Message};
 use bitcoin::sighash::SighashCache;
 use bitcoin::transaction::Version;
 use bitcoin::{
-    Address, Amount, BlockHash, CompressedPublicKey, EcdsaSighashType, KnownHrp, Network, OutPoint,
-    PrivateKey, PublicKey, Script, Sequence, Transaction, TxIn, TxOut, Txid, Witness,
+    Address, Amount, BlockHash, EcdsaSighashType, KnownHrp, Network, OutPoint, PrivateKey,
+    PublicKey, Script, Sequence, Transaction, TxIn, TxOut, Txid, Witness,
 };
 use bitcoincore_rpc::{Client as BitcoinRpcClient, Error as BtcError, RpcApi};
 use btc_relay::events::{DepositTxVerified, StoreHeader, Withdrawal};
 use btc_relay::program::BtcRelay;
 use btc_relay::state::MainState;
 use btc_relay::utils::bridge_deposit_script;
+use futures::future::join_all;
 use log::{debug, error, info};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use solana_transaction_status::option_serializer::OptionSerializer;
-use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -309,7 +309,13 @@ struct TxStateRequest {
     tx_id: String,
 }
 
-async fn get_state_tx_web_api(
+#[derive(Serialize)]
+struct DepositTxStateResult {
+    tx_id: String,
+    status: DepositTxState,
+}
+
+async fn get_tx_state_web_api(
     data: web::Data<RelayTransactionsState>,
     req: web::Query<TxStateRequest>,
 ) -> impl Responder {
@@ -323,10 +329,53 @@ async fn get_state_tx_web_api(
         .expect("deposit_tx_state to not panic");
 
     match deposit_tx_state_res {
-        Ok(state) => HttpResponse::Ok().json(format!("{state}")),
+        Ok(state) => HttpResponse::Ok().json(DepositTxStateResult {
+            tx_id: req.into_inner().tx_id,
+            status: state,
+        }),
         Err(e) => {
             error!("{e:?}");
             HttpResponse::InternalServerError().json("Failed to get deposit tx state")
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct TxStatesRequest {
+    tx_ids: Vec<String>,
+}
+
+async fn get_tx_states_web_api(
+    data: web::Data<RelayTransactionsState>,
+    req: web::Query<TxStatesRequest>,
+) -> impl Responder {
+    let tx_ids: Vec<_> = match req.tx_ids.iter().map(|id| Txid::from_str(id)).collect() {
+        Ok(tx_ids) => tx_ids,
+        Err(_) => return HttpResponse::BadRequest().json("tx_id is not valid"),
+    };
+
+    let deposit_tx_state_fut = tx_ids.into_iter().map(|tx_id| {
+        spawn_blocking({
+            let data = data.clone();
+            move || deposit_tx_state(&data.relay_program, tx_id)
+        })
+    });
+
+    let deposit_tx_state_results: Result<Vec<_>, _> = join_all(deposit_tx_state_fut)
+        .await
+        .into_iter()
+        .zip(req.into_inner().tx_ids.into_iter())
+        .map(|(res, tx_id)| {
+            res.expect("no panic")
+                .map(|status| DepositTxStateResult { tx_id, status })
+        })
+        .collect();
+
+    match deposit_tx_state_results {
+        Ok(states) => HttpResponse::Ok().json(states),
+        Err(e) => {
+            error!("{e:?}");
+            HttpResponse::InternalServerError().json("Failed to get deposit tx states")
         }
     }
 }
@@ -379,7 +428,8 @@ pub async fn relay_transactions(config: RelayConfig, deposit_pubkey_hash: [u8; 2
             .app_data(app_state.clone())
             .route("/relay_tx", web::post().to(relay_tx_web_api))
             .route("/get_deposit_address", web::get().to(get_deposit_address))
-            .route("/get_tx_state", web::get().to(get_state_tx_web_api))
+            .route("/get_tx_state", web::get().to(get_tx_state_web_api))
+            .route("/get_tx_states", web::get().to(get_tx_states_web_api))
     })
     .bind("0.0.0.0:8199")
     .expect("Couldn't bind to 0.0.0.0:8199")

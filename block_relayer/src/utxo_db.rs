@@ -45,7 +45,7 @@ impl UtxoDatabase {
 
     pub fn insert_utxo(&self, utxo: &Utxo) -> Result<()> {
         debug!("Inserting utxo {utxo:?}");
-        let rows_changed = self.conn.execute(
+        self.conn.execute(
             "INSERT INTO utxos (txid, vout, amount, script_pubkey, yona_address, bridge_pubkey, redeem_script)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![

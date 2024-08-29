@@ -22,6 +22,7 @@ use btc_relay::instruction::{
 use btc_relay::state::{DepositTxState as ProgramDepositTxState, MainState, TxState};
 use btc_relay::structs::{BlockHeader, CommittedBlockHeader};
 use log::{debug, info};
+use serde::Serialize;
 use std::fmt;
 use std::sync::Arc;
 
@@ -349,6 +350,8 @@ pub fn bridge_withdraw(
     Ok(res)
 }
 
+#[derive(Serialize)]
+#[serde(untagged)]
 pub enum DepositTxState {
     NotRelayed,
     Relayed,
