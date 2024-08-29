@@ -63,7 +63,7 @@ paths:
             application/json:
               schema:
                 type: string
-              example: 2LjpAwdh5r7vQ6eDwWAJ5rjoMXkxV921XKXkMdPXNjmCB3T3FcJcNFbJCG7FVxeR399H6vDTgMHjqdYHMcEJ12by
+              example: 2idEa74e7nTxRWpYT5YwGEMn1iUSYAo59EFt13zCJNz9VHVoJsXKkEN3nEx1dN8Z8E8Bqpg2TMp964TdrXFk5C7D
         '400':
           description: Bad request (e.g., invalid transaction ID or Yona address)
           content:
@@ -73,7 +73,7 @@ paths:
               example: tx_id is not valid
   /get_tx_state:
     get:
-      summary: Get Transaction State
+      summary: Get transaction state
       description: Retrieve the state of a transaction based on the provided `tx_id`.
       parameters:
         - in: query
@@ -89,11 +89,78 @@ paths:
           content:
             application/json:
               schema:
-                oneOf:
-                  - type: string
-                    example: "Relayed"
-                  - type: string
-                    example: "NotRelayed"
+                type: object
+                properties:
+                  tx_id:
+                    type: string
+                    description: Provided transaction ID
+                  status:
+                    type: string
+                    description: The status of the transaction. Relayed or NotRelayed.
+                required:
+                  - tx_id
+                  - yona_address
+              example:
+                tx_id: "c37b2ec12c63fc5eaa5b12220b816c5fc9305383339668b5ec3bbc3434208253"
+                status: "Relayed"
+        '400':
+          description: Invalid transaction ID.
+          content:
+            application/json:
+              schema:
+                type: string
+                example: "tx_id is not valid"
+        '500':
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                type: string
+                example: "Failed to get deposit tx state"
+  /get_tx_states:
+    get:
+      summary: Get multiple transactions state
+      description: Retrieve the state of a transactions based on the provided `tx_id`'s.
+      parameters:
+        - in: query
+          name: tx_ids
+          required: true
+          schema:
+            type: array
+            items:
+              type: string
+          description: The transaction IDs
+          example: [ c37b2ec12c63fc5eaa5b12220b816c5fc9305383339668b5ec3bbc3434208253, c37b2ec12c63fc5eaa5b12220b816c5fc9305383339668b5ec3bbc3434208252 ]
+      responses:
+        '200':
+          description: Successful response with the state of the transaction (Relayed or NotRelayed).
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    tx_id:
+                      type: string
+                      description: Provided transaction ID
+                    status:
+                      type: string
+                      description: The status of the transaction. Relayed or NotRelayed.
+                  required:
+                    - tx_id
+                    - yona_address
+                example: [
+                  {
+                    tx_id: "c37b2ec12c63fc5eaa5b12220b816c5fc9305383339668b5ec3bbc3434208253",
+                    status: "Relayed"
+                  },
+                  {
+                    tx_id: "c37b2ec12c63fc5eaa5b12220b816c5fc9305383339668b5ec3bbc3434208252",
+                    status: "NotRelayed"
+                  }
+                ]
+
         '400':
           description: Invalid transaction ID.
           content:
