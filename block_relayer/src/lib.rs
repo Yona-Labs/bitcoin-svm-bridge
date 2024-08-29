@@ -347,7 +347,7 @@ struct TxStatesRequest {
 
 async fn get_tx_states_web_api(
     data: web::Data<RelayTransactionsState>,
-    req: web::Query<TxStatesRequest>,
+    req: actix_web_lab::extract::Query<TxStatesRequest>,
 ) -> impl Responder {
     let tx_ids: Vec<_> = match req.tx_ids.iter().map(|id| Txid::from_str(id)).collect() {
         Ok(tx_ids) => tx_ids,
