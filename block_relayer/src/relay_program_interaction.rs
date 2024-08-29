@@ -351,7 +351,6 @@ pub fn bridge_withdraw(
 }
 
 #[derive(Serialize)]
-#[serde(untagged)]
 pub enum DepositTxState {
     NotRelayed,
     Relayed,
