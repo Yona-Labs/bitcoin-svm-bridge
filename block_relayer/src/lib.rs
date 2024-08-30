@@ -174,7 +174,7 @@ pub fn relay_blocks_from_full_node(config: RelayConfig, wait_for_new_block: u64)
             new_height,
             stored_header.header,
         ) {
-            error!("Error {e} on block submit attempt");
+            error!("Error {e:?} on block submit attempt");
             thread::sleep(Duration::from_secs(10));
             continue;
         }
