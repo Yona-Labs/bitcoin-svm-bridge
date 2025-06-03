@@ -1,11 +1,13 @@
+pub mod bridge_db;
 pub mod config;
 mod merkle;
 pub mod relay_program_interaction;
-pub mod utxo_db;
 
+use crate::bridge_db::{
+    insert_solana_transaction, set_transaction_processed, solana_transaction_processed,
+};
 use crate::config::RelayConfig;
 use crate::relay_program_interaction::*;
-use crate::utxo_db::{Utxo, UtxoDatabase};
 use actix_cors::Cors;
 use actix_web::{web, App, HttpResponse, HttpServer, Responder};
 use anchor_client::anchor_lang::{AccountDeserialize, AnchorDeserialize, Discriminator, Id};
@@ -28,6 +30,7 @@ use bitcoin::{
     PublicKey, Script, Sequence, Transaction, TxIn, TxOut, Txid, Witness,
 };
 use bitcoincore_rpc::{Client as BitcoinRpcClient, Error as BtcError, RpcApi};
+use bridge_db::Utxo;
 use btc_relay::events::{DepositTxVerified, StoreHeader, Withdrawal};
 use btc_relay::program::BtcRelay;
 use btc_relay::state::MainState;
@@ -36,10 +39,12 @@ use futures::future::join_all;
 use log::{debug, error, info};
 use serde::{Deserialize, Serialize};
 use solana_transaction_status::option_serializer::OptionSerializer;
+use sqlx::SqlitePool;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 use std::{env, error, thread};
+use tokio::runtime;
 use tokio::task::spawn_blocking;
 
 pub fn get_yona_client(
@@ -440,11 +445,13 @@ pub async fn relay_transactions(config: RelayConfig, deposit_pubkey_hash: [u8; 2
 
 pub fn process_bridge_events(
     config: RelayConfig,
-    utxo_db: UtxoDatabase,
+    pool: SqlitePool,
     bridge_privkey: PrivateKey,
     bridge_pubkey: PublicKey,
     secp_context: Secp256k1<All>,
 ) {
+    let runtime = runtime::Runtime::new().unwrap();
+
     let yona_client = get_yona_client(&config).expect("Couldn't create Yona client");
 
     let bitcoin_rpc_client =
@@ -469,6 +476,21 @@ pub fn process_bridge_events(
             .expect("get_signatures_for_address");
 
         for transaction in transactions_history {
+            if runtime
+                .block_on(solana_transaction_processed(&pool, &transaction.signature))
+                .unwrap()
+            {
+                continue;
+            }
+
+            runtime
+                .block_on(insert_solana_transaction(
+                    &pool,
+                    &transaction.signature,
+                    transaction.slot as i64,
+                ))
+                .unwrap();
+
             let signature = Signature::from_str(&transaction.signature).unwrap();
             let config = RpcTransactionConfig {
                 encoding: None,
@@ -493,12 +515,12 @@ pub fn process_bridge_events(
                     base64::prelude::BASE64_STANDARD.decode(maybe_base64).ok()
                 })
                 .for_each(|bytes| {
-                    if bytes.starts_with(&DepositTxVerified::discriminator()) {
+                    if bytes.starts_with(&DepositTxVerified::DISCRIMINATOR) {
                         let event = DepositTxVerified::try_from_slice(&bytes[8..]).unwrap();
                         let bitcoin_tx = bitcoin_rpc_client
                             .get_raw_transaction(&Txid::from_byte_array(event.tx_id), None)
                             .expect("get_raw_transaction");
-                        debug!("Got deposit Bitcoin tx {bitcoin_tx:?}");
+
                         let deposit_script = bridge_deposit_script(
                             event.yona_address.to_bytes(),
                             event.deposit_pubkey_hash,
@@ -518,16 +540,15 @@ pub fn process_bridge_events(
                                     bridge_pubkey: vec![],
                                     redeem_script: deposit_script.as_bytes().into(),
                                 };
-                                if let Err(e) = utxo_db.insert_utxo(&utxo) {
+                                if let Err(e) = runtime.block_on(utxo.insert(&pool)) {
                                     error!("Error on UTXO insertion {e:?}");
                                 }
                             }
                         }
-                    } else if bytes.starts_with(&Withdrawal::discriminator()) {
+                    } else if bytes.starts_with(&Withdrawal::DISCRIMINATOR) {
                         let event = Withdrawal::try_from_slice(&bytes[8..]).unwrap();
-                        debug!("Got withdrawal event {event:?}");
-
-                        let available_utxos = match utxo_db.get_all_utxos() {
+                        info!("Got withdrawal event {event:?}");
+                        let available_utxos = match runtime.block_on(Utxo::get_all_utxos(&pool)) {
                             Ok(utxos) => utxos,
                             Err(e) => {
                                 error!("Error {e:?} on getting utxos");
@@ -627,6 +648,9 @@ pub fn process_bridge_events(
                         }
                     }
                 });
+            runtime
+                .block_on(set_transaction_processed(&pool, &transaction.signature))
+                .unwrap();
         }
 
         thread::sleep(Duration::from_secs(1));

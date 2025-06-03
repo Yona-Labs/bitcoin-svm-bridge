@@ -18,11 +18,11 @@ use bitcoin::{
 };
 use bitcoincore_rpc::json::{ImportDescriptors, Timestamp};
 use bitcoincore_rpc::{Client as BitcoinRpcClient, RpcApi};
+use block_relayer_lib::bridge_db::init_test_pool;
 use block_relayer_lib::config::{BitcoinAuth, RelayConfig};
 use block_relayer_lib::relay_program_interaction::{
     bridge_withdraw, deposit_tx_state, relay_tx, DepositTxState,
 };
-use block_relayer_lib::utxo_db::UtxoDatabase;
 use block_relayer_lib::{
     get_yona_client, process_bridge_events, relay_blocks_from_full_node, run_deposit,
     run_init_program,
@@ -32,7 +32,6 @@ use bollard::Docker;
 use btc_relay::events::Withdrawal;
 use btc_relay::utils::bridge_deposit_script;
 use once_cell::sync::Lazy;
-use rusqlite::Connection;
 use solana_transaction_status::option_serializer::OptionSerializer;
 use std::env;
 use std::path::PathBuf;
@@ -158,19 +157,13 @@ static TEST_CTX: Lazy<TestCtx> = Lazy::new(|| {
         move || relay_blocks_from_full_node(relay_config, 1)
     });
 
+    let pool = TEST_RUNTIME.block_on(init_test_pool());
+
     thread::spawn({
         let relay_config = relay_config.clone();
         let bridge_privkey = bridge_privkey.clone();
         let secp256k1 = secp256k1.clone();
-        move || {
-            process_bridge_events(
-                relay_config,
-                UtxoDatabase::new_from_conn(Connection::open_in_memory().unwrap()).unwrap(),
-                bridge_privkey,
-                pubkey,
-                secp256k1,
-            )
-        }
+        move || process_bridge_events(relay_config, pool, bridge_privkey, pubkey, secp256k1)
     });
 
     TestCtx {
