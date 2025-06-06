@@ -592,15 +592,16 @@ pub fn process_bridge_events(
 
                         let change = collected_amount - bitcoin_amount - 1000;
 
+                        let bridge_script_pubkey = Address::p2wpkh(
+                            &bridge_pubkey
+                                .try_into()
+                                .expect("bridge_pubkey is compressed"),
+                            KnownHrp::Regtest,
+                        )
+                        .script_pubkey();
                         let change_out = TxOut {
                             value: Amount::from_sat(change),
-                            script_pubkey: Address::p2wpkh(
-                                &bridge_pubkey
-                                    .try_into()
-                                    .expect("bridge_pubkey is compressed"),
-                                KnownHrp::Regtest,
-                            )
-                            .script_pubkey(),
+                            script_pubkey: bridge_script_pubkey.clone(),
                         };
 
                         let tx = Transaction {
@@ -614,14 +615,25 @@ pub fn process_bridge_events(
                         let mut witnesses = vec![];
 
                         for (i, utxo) in inputs_utxos.into_iter().enumerate() {
-                            let sig_hash = sig_hash_cache
-                                .p2wsh_signature_hash(
-                                    i,
-                                    Script::from_bytes(&utxo.redeem_script),
-                                    Amount::from_sat(utxo.amount),
-                                    EcdsaSighashType::All,
-                                )
-                                .unwrap();
+                            let sig_hash = if !utxo.redeem_script.is_empty() {
+                                sig_hash_cache
+                                    .p2wsh_signature_hash(
+                                        i,
+                                        Script::from_bytes(&utxo.redeem_script),
+                                        Amount::from_sat(utxo.amount),
+                                        EcdsaSighashType::All,
+                                    )
+                                    .unwrap()
+                            } else {
+                                sig_hash_cache
+                                    .p2wpkh_signature_hash(
+                                        i,
+                                        bridge_script_pubkey.as_script(),
+                                        Amount::from_sat(utxo.amount),
+                                        EcdsaSighashType::All,
+                                    )
+                                    .unwrap()
+                            };
 
                             let message = Message::from(sig_hash);
                             let signature =
@@ -633,7 +645,9 @@ pub fn process_bridge_events(
                             let mut witness = Witness::new();
                             witness.push(sig);
                             witness.push(bridge_pubkey.to_bytes());
-                            witness.push(utxo.redeem_script);
+                            if !utxo.redeem_script.is_empty() {
+                                witness.push(utxo.redeem_script);
+                            }
                             witnesses.push(witness);
                         }
 
@@ -643,7 +657,32 @@ pub fn process_bridge_events(
                         }
 
                         match bitcoin_rpc_client.send_raw_transaction(&tx) {
-                            Ok(id) => info!("Processed bridge withdrawal, Bitcoin tx id {}", id),
+                            Ok(id) => {
+                                info!("Processed bridge withdrawal, Bitcoin tx id {}", id);
+                                for input in tx.input.iter() {
+                                    runtime
+                                        .block_on(Utxo::delete_utxo(
+                                            &pool,
+                                            &input.previous_output.txid.to_byte_array(),
+                                            input.previous_output.vout,
+                                        ))
+                                        .unwrap();
+                                }
+
+                                let utxo = Utxo {
+                                    txid: tx.compute_txid().to_byte_array(),
+                                    vout: 1,
+                                    amount: tx.output[1].value.to_sat(),
+                                    script_pubkey: tx.output[1].script_pubkey.to_bytes(),
+                                    yona_address: "".into(),
+                                    bridge_pubkey: vec![],
+                                    redeem_script: vec![],
+                                };
+
+                                if let Err(e) = runtime.block_on(utxo.insert(&pool)) {
+                                    error!("Error on UTXO insertion {e:?}");
+                                }
+                            }
                             Err(e) => error!("Error {e:?} on broadcasting Bitcoin tx"),
                         }
                     }

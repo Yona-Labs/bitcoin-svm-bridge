@@ -316,6 +316,11 @@ fn relay_deposit_transaction() {
         .json()
         .unwrap();
 
+    let bitcoin_address = "bcrt1qm3zxtz0evpc0r5ch3az2ulx0cxce9yjkcs73cq".to_string();
+    bridge_withdraw(&program, LAMPORTS_PER_SOL, bitcoin_address.clone()).expect("bridge_withdraw");
+    // give event some time to be processed
+    thread::sleep(Duration::from_secs(10));
+
     let funded = response["chain_stats"]["funded_txo_sum"].as_u64().unwrap();
     let spent = response["chain_stats"]["spent_txo_sum"].as_u64().unwrap();
 

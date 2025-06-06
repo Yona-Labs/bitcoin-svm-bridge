@@ -66,7 +66,7 @@ impl Utxo {
         Ok(utxos)
     }
 
-    pub async fn delete_utxo(pool: &SqlitePool, txid: &[u8], vout: i64) -> Result<(), sqlx::Error> {
+    pub async fn delete_utxo(pool: &SqlitePool, txid: &[u8], vout: u32) -> Result<(), sqlx::Error> {
         let query = "DELETE FROM utxos WHERE txid = ?1 AND vout = ?2";
 
         sqlx::query(query)
