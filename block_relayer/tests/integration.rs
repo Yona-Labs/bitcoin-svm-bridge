@@ -1,22 +1,10 @@
 use anchor_client::anchor_lang::prelude::Pubkey;
-use anchor_client::anchor_lang::{AnchorDeserialize, Discriminator, Key};
-use anchor_client::solana_client::rpc_client::GetConfirmedSignaturesForAddress2Config;
-use anchor_client::solana_client::rpc_config::RpcTransactionConfig;
-use anchor_client::solana_sdk::commitment_config::CommitmentConfig;
-use anchor_client::solana_sdk::native_token::LAMPORTS_PER_SOL;
-use anchor_client::solana_sdk::signature::Signature;
-use base64::Engine;
-use bitcoin::absolute::LockTime;
+use anchor_client::anchor_lang::Key;
+use anchor_spl::token::Mint;
 use bitcoin::hashes::Hash;
 use bitcoin::key::{PrivateKey, Secp256k1};
-use bitcoin::secp256k1::{All, Message};
-use bitcoin::sighash::SighashCache;
-use bitcoin::transaction::Version;
-use bitcoin::{
-    Address, Amount, EcdsaSighashType, Network, OutPoint, ScriptBuf, Sequence, Transaction, TxIn,
-    TxOut, Witness,
-};
-use bitcoincore_rpc::json::{ImportDescriptors, Timestamp};
+use bitcoin::secp256k1::All;
+use bitcoin::{Address, Amount, Network};
 use bitcoincore_rpc::{Client as BitcoinRpcClient, RpcApi};
 use block_relayer_lib::bridge_db::init_test_pool;
 use block_relayer_lib::config::{BitcoinAuth, RelayConfig};
@@ -24,19 +12,16 @@ use block_relayer_lib::relay_program_interaction::{
     bridge_withdraw, deposit_tx_state, relay_tx, DepositTxState,
 };
 use block_relayer_lib::{
-    get_yona_client, process_bridge_events, relay_blocks_from_full_node, run_deposit,
-    run_init_program,
+    get_yona_client, process_bridge_events, relay_blocks_from_full_node, run_init_program,
 };
 use bollard::container::RemoveContainerOptions;
 use bollard::Docker;
-use btc_relay::events::Withdrawal;
+use btc_relay::config::WBTC_MINT_SEED;
 use btc_relay::utils::bridge_deposit_script;
 use once_cell::sync::Lazy;
-use solana_transaction_status::option_serializer::OptionSerializer;
 use std::env;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
-use std::str::FromStr;
 use std::sync::Mutex;
 use std::thread;
 use std::time::Duration;
@@ -148,10 +133,6 @@ static TEST_CTX: Lazy<TestCtx> = Lazy::new(|| {
         .expect("run_init_program");
     println!("Init result {}", init_result);
 
-    let deposit_result =
-        run_deposit(relay_config.clone(), 1000 * LAMPORTS_PER_SOL).expect("run_deposit");
-    println!("Deposit result {}", init_result);
-
     thread::spawn({
         let relay_config = relay_config.clone();
         move || relay_blocks_from_full_node(relay_config, 1)
@@ -189,32 +170,37 @@ fn program_initialized() {
         .rpc()
         .get_account(&main_state)
         .expect("get main state account");
+}
 
-    let (deposit_account, _) = Pubkey::find_program_address(&[b"solana_deposit"], &btc_relay::id());
+fn get_address_balance(address: &str) -> u64 {
+    let explorer_url = format!("http://127.0.0.1:8094/regtest/api/address/{address}");
+    let response: serde_json::Value = reqwest::blocking::get(explorer_url)
+        .unwrap()
+        .json()
+        .unwrap();
 
-    let rent_exempt = program
-        .rpc()
-        .get_minimum_balance_for_rent_exemption(9)
-        .expect("get_minimum_balance_for_rent_exemption");
+    let funded = response["chain_stats"]["funded_txo_sum"].as_u64().unwrap();
+    let spent = response["chain_stats"]["spent_txo_sum"].as_u64().unwrap();
 
-    let deposit_balance = program
-        .rpc()
-        .get_balance(&deposit_account)
-        .expect("deposit account get_balance");
-
-    assert_eq!(deposit_balance, 1000 * LAMPORTS_PER_SOL + rent_exempt);
+    funded - spent
 }
 
 #[test]
-fn relay_deposit_transaction() {
-    // send it first on Bitcoin
+fn relay_transaction() {
     let client = get_yona_client(&TEST_CTX.relay_config).expect("get_yona_client");
     let program = client.program(btc_relay::id()).expect("btc_relay program");
+    let (wbtc_mint, _) = anchor_client::solana_sdk::pubkey::Pubkey::find_program_address(
+        &[WBTC_MINT_SEED],
+        &program.id(),
+    );
 
     let pubkey_hash = TEST_CTX
         .bridge_privkey
         .public_key(&TEST_CTX.secp256k1)
         .pubkey_hash();
+
+    let bitcoin_address = "bcrt1qm3zxtz0evpc0r5ch3az2ulx0cxce9yjkcs73cq";
+    let balance_before = get_address_balance(bitcoin_address);
 
     let output_script = bridge_deposit_script(
         program.payer().key().to_bytes(),
@@ -267,6 +253,9 @@ fn relay_deposit_transaction() {
     let tx_state = deposit_tx_state(&program, deposit_tx_id).expect("deposit_tx_state");
     assert!(matches!(tx_state, DepositTxState::Relayed));
 
+    let wbtc_mint_account: Mint = program.account(wbtc_mint).unwrap();
+    assert_eq!(wbtc_mint_account.supply, Amount::ONE_BTC.to_sat());
+
     let big_deposit_tx_id = bitcoin_client
         .send_to_address(
             &deposit_address,
@@ -304,28 +293,33 @@ fn relay_deposit_transaction() {
     let tx_state = deposit_tx_state(&program, big_deposit_tx_id).expect("deposit_tx_state");
     assert!(matches!(tx_state, DepositTxState::Relayed));
 
-    let bitcoin_address = "bcrt1qm3zxtz0evpc0r5ch3az2ulx0cxce9yjkcs73cq".to_string();
-    bridge_withdraw(&program, LAMPORTS_PER_SOL, bitcoin_address.clone()).expect("bridge_withdraw");
+    let wbtc_mint_account: Mint = program.account(wbtc_mint).unwrap();
+    assert_eq!(wbtc_mint_account.supply, Amount::from_int_btc(401).to_sat());
+
+    bridge_withdraw(
+        &program,
+        Amount::from_int_btc(10).to_sat(),
+        bitcoin_address.into(),
+    )
+    .expect("bridge_withdraw");
 
     // give event some time to be processed
     thread::sleep(Duration::from_secs(10));
 
-    let explorer_url = format!("http://127.0.0.1:8094/regtest/api/address/{bitcoin_address}");
-    let response: serde_json::Value = reqwest::blocking::get(explorer_url)
-        .unwrap()
-        .json()
-        .unwrap();
+    let wbtc_mint_account: Mint = program.account(wbtc_mint).unwrap();
+    assert_eq!(wbtc_mint_account.supply, Amount::from_int_btc(391).to_sat());
 
-    let bitcoin_address = "bcrt1qm3zxtz0evpc0r5ch3az2ulx0cxce9yjkcs73cq".to_string();
-    bridge_withdraw(&program, LAMPORTS_PER_SOL, bitcoin_address.clone()).expect("bridge_withdraw");
+    bridge_withdraw(&program, Amount::ONE_BTC.to_sat(), bitcoin_address.into())
+        .expect("bridge_withdraw");
     // give event some time to be processed
     thread::sleep(Duration::from_secs(10));
 
-    let funded = response["chain_stats"]["funded_txo_sum"].as_u64().unwrap();
-    let spent = response["chain_stats"]["spent_txo_sum"].as_u64().unwrap();
+    let wbtc_mint_account: Mint = program.account(wbtc_mint).unwrap();
+    assert_eq!(wbtc_mint_account.supply, Amount::from_int_btc(390).to_sat());
 
-    let actual_balance = Amount::from_sat(funded - spent);
-    let expected_balance = Amount::ONE_BTC;
+    let balance_after = get_address_balance(bitcoin_address);
+    let balance_diff = balance_after - balance_before;
+    let expected_diff = Amount::from_int_btc(11).to_sat();
 
-    assert_eq!(expected_balance, actual_balance);
+    assert_eq!(expected_diff, balance_diff);
 }

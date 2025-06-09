@@ -253,15 +253,6 @@ impl From<AnchorClientError> for DepositError {
     }
 }
 
-pub fn run_deposit(config: RelayConfig, amount: u64) -> Result<Signature, DepositError> {
-    let yona_client = get_yona_client(&config).map_err(DepositError::CouldNotInitYonaClient)?;
-
-    let relay_program = BtcRelay::id();
-    let program = yona_client.program(relay_program)?;
-
-    Ok(init_deposit(&program, amount)?)
-}
-
 struct RelayTransactionsState {
     relay_program: Program<Arc<Keypair>>,
     bitcoin_rpc_client: BitcoinRpcClient,
@@ -522,7 +513,7 @@ pub fn process_bridge_events(
                             .expect("get_raw_transaction");
 
                         let deposit_script = bridge_deposit_script(
-                            event.yona_address.to_bytes(),
+                            event.wbtc_receiver_sol.to_bytes(),
                             event.deposit_pubkey_hash,
                         );
                         let expected_script_pubkey =
@@ -536,7 +527,7 @@ pub fn process_bridge_events(
                                     vout: i as u32,
                                     amount: out.value.to_sat(),
                                     script_pubkey: expected_script_pubkey.to_bytes(),
-                                    yona_address: event.yona_address.to_string(),
+                                    yona_address: event.wbtc_receiver_sol.to_string(),
                                     bridge_pubkey: vec![],
                                     redeem_script: deposit_script.as_bytes().into(),
                                 };
@@ -560,9 +551,8 @@ pub fn process_bridge_events(
                             .require_network(Network::Regtest)
                             .unwrap();
 
-                        let bitcoin_amount = event.amount / 10;
                         let tx_out = TxOut {
-                            value: Amount::from_sat(bitcoin_amount),
+                            value: Amount::from_sat(event.amount),
                             script_pubkey: address.script_pubkey(),
                         };
 
@@ -585,12 +575,12 @@ pub fn process_bridge_events(
                             collected_amount += utxo.amount;
                             inputs_utxos.push(utxo);
 
-                            if collected_amount >= bitcoin_amount + 1000 {
+                            if collected_amount >= event.amount + 1000 {
                                 break;
                             }
                         }
 
-                        let change = collected_amount - bitcoin_amount - 1000;
+                        let change = collected_amount - event.amount - 1000;
 
                         let bridge_script_pubkey = Address::p2wpkh(
                             &bridge_pubkey

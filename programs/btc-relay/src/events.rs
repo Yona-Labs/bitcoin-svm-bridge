@@ -35,6 +35,7 @@ pub struct Withdrawal {
 #[derive(Debug)]
 pub struct DepositTxVerified {
     pub tx_id: [u8; 32],
-    pub yona_address: Pubkey,
+    pub wbtc_receiver_sol: Pubkey,
+    pub wbtc_receiver: Pubkey,
     pub deposit_pubkey_hash: [u8; 20],
 }

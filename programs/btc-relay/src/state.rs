@@ -4,12 +4,6 @@ use anchor_lang::prelude::*;
 const PRUNING_FACTOR_U32: u32 = 250;
 const PRUNING_FACTOR: usize = PRUNING_FACTOR_U32 as usize;
 
-#[account(zero_copy)]
-#[repr(C)]
-pub struct DepositState {
-    pub bump: u8,
-}
-
 #[repr(C)]
 #[derive(AnchorDeserialize, AnchorSerialize, Clone, Copy)]
 pub enum TxState {

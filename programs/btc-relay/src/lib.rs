@@ -1,4 +1,5 @@
 use anchor_lang::prelude::*;
+use anchor_spl::token::{burn, mint_to, Burn, MintTo};
 use bitcoin::address::Address;
 use bitcoin::consensus::Decodable;
 use bitcoin::hashes::Hash;
@@ -6,6 +7,7 @@ use bitcoin::Network;
 use bitcoin::Transaction;
 use std::str::FromStr;
 
+use config::*;
 use errors::*;
 use events::*;
 use instructions::*;
@@ -14,6 +16,7 @@ use structs::*;
 use utils::bridge_mint_amount;
 
 mod arrayutils;
+pub mod config;
 mod errors;
 pub mod events;
 mod instructions;
@@ -423,13 +426,13 @@ pub mod btc_relay {
             .try_into()
             .expect("20 bytes");
 
-        let amount_to_transfer = bridge_mint_amount(
+        let amount_to_mint = bridge_mint_amount(
             &bitcoin_tx,
-            ctx.accounts.mint_receiver.key().to_bytes(),
+            ctx.accounts.wbtc_receiver_sol.key().to_bytes(),
             deposit_pubkey_hash,
         );
 
-        require!(amount_to_transfer > 0, RelayErrorCode::NoDepositOutputs);
+        require!(amount_to_mint > 0, RelayErrorCode::NoDepositOutputs);
 
         let computed_tx_id = bitcoin_tx.compute_txid();
         require!(
@@ -444,18 +447,26 @@ pub mod btc_relay {
             RelayErrorCode::MerkleRoot
         );
 
-        let sol_amount = amount_to_transfer * 10;
+        let seeds = [STATE_SEED, &[ctx.bumps.main_state]];
+        let signer_seeds = &[&seeds[..]];
 
-        **ctx
-            .accounts
-            .deposit_account
-            .as_ref()
-            .try_borrow_mut_lamports()? -= sol_amount;
-        **ctx.accounts.mint_receiver.try_borrow_mut_lamports()? += sol_amount;
+        mint_to(
+            CpiContext::new_with_signer(
+                ctx.accounts.token_program.to_account_info(),
+                MintTo {
+                    mint: ctx.accounts.wbtc_mint.to_account_info(),
+                    to: ctx.accounts.wbtc_receiver.to_account_info(),
+                    authority: ctx.accounts.main_state.to_account_info(),
+                },
+                signer_seeds,
+            ),
+            amount_to_mint,
+        )?;
 
         emit!(DepositTxVerified {
             tx_id,
-            yona_address: *ctx.accounts.mint_receiver.key,
+            wbtc_receiver_sol: *ctx.accounts.wbtc_receiver_sol.key,
+            wbtc_receiver: ctx.accounts.wbtc_receiver.key(),
             deposit_pubkey_hash,
         });
 
@@ -488,24 +499,6 @@ pub mod btc_relay {
             },
             RelayErrorCode::InvalidBlockheight
         );
-
-        Ok(())
-    }
-
-    pub fn deposit(ctx: Context<Deposit>, amount: u64) -> Result<()> {
-        // Transfer SOL from the user to the program's account
-        let ix = anchor_lang::solana_program::system_instruction::transfer(
-            &ctx.accounts.signer.key,
-            &ctx.accounts.deposit_account.as_ref().key,
-            amount,
-        );
-        anchor_lang::solana_program::program::invoke(
-            &ix,
-            &[
-                ctx.accounts.signer.to_account_info(),
-                ctx.accounts.deposit_account.to_account_info(),
-            ],
-        )?;
 
         Ok(())
     }
@@ -578,29 +571,36 @@ pub mod btc_relay {
             .try_into()
             .expect("20 bytes");
 
-        let amount_to_transfer = bridge_mint_amount(
+        let amount_to_mint = bridge_mint_amount(
             &bitcoin_tx,
-            ctx.accounts.mint_receiver.key().to_bytes(),
+            ctx.accounts.wbtc_receiver_sol.key().to_bytes(),
             deposit_pubkey_hash,
         );
 
-        require!(amount_to_transfer > 0, RelayErrorCode::NoDepositOutputs);
+        require!(amount_to_mint > 0, RelayErrorCode::NoDepositOutputs);
 
-        let sol_amount = amount_to_transfer * 10;
+        let seeds = [STATE_SEED, &[ctx.bumps.main_state]];
+        let signer_seeds = &[&seeds[..]];
 
-        **ctx
-            .accounts
-            .deposit_account
-            .as_ref()
-            .try_borrow_mut_lamports()? -= sol_amount;
-
-        **ctx.accounts.mint_receiver.try_borrow_mut_lamports()? += sol_amount;
+        mint_to(
+            CpiContext::new_with_signer(
+                ctx.accounts.token_program.to_account_info(),
+                MintTo {
+                    mint: ctx.accounts.wbtc_mint.to_account_info(),
+                    to: ctx.accounts.wbtc_receiver.to_account_info(),
+                    authority: ctx.accounts.main_state.to_account_info(),
+                },
+                signer_seeds,
+            ),
+            amount_to_mint,
+        )?;
 
         ctx.accounts.tx_account.state = TxState::VerificationComplete;
 
         emit!(DepositTxVerified {
             tx_id,
-            yona_address: *ctx.accounts.mint_receiver.key,
+            wbtc_receiver_sol: *ctx.accounts.wbtc_receiver_sol.key,
+            wbtc_receiver: ctx.accounts.wbtc_receiver.key(),
             deposit_pubkey_hash,
         });
 
@@ -618,17 +618,16 @@ pub mod btc_relay {
             .require_network(Network::Regtest)
             .map_err(|_| error!(RelayErrorCode::InvalidBitcoinAddress))?;
 
-        let ix = anchor_lang::solana_program::system_instruction::transfer(
-            &ctx.accounts.signer.key,
-            &ctx.accounts.deposit_account.as_ref().key,
+        burn(
+            CpiContext::new(
+                ctx.accounts.token_program.to_account_info(),
+                Burn {
+                    mint: ctx.accounts.wbtc_mint.to_account_info(),
+                    from: ctx.accounts.wbtc_account.to_account_info(),
+                    authority: ctx.accounts.signer.to_account_info(),
+                },
+            ),
             amount,
-        );
-        anchor_lang::solana_program::program::invoke(
-            &ix,
-            &[
-                ctx.accounts.signer.to_account_info(),
-                ctx.accounts.deposit_account.to_account_info(),
-            ],
         )?;
 
         emit!(Withdrawal {
