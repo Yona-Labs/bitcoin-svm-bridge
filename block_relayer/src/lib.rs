@@ -44,7 +44,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 use std::{env, error, thread};
-use tokio::runtime;
+use tokio::runtime::Runtime;
 use tokio::task::spawn_blocking;
 
 pub fn get_yona_client(
@@ -440,9 +440,8 @@ pub fn process_bridge_events(
     bridge_privkey: PrivateKey,
     bridge_pubkey: PublicKey,
     secp_context: Secp256k1<All>,
+    runtime: Runtime,
 ) {
-    let runtime = runtime::Runtime::new().unwrap();
-
     let yona_client = get_yona_client(&config).expect("Couldn't create Yona client");
 
     let bitcoin_rpc_client =

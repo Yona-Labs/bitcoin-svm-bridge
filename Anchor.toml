@@ -5,10 +5,10 @@ seeds = false
 skip-lint = false
 
 [programs.localnet]
-btc_relay = "3eMqZdqBdViYtboCkdMKFbduiy923D3TpJ8zDDyg7kxs"
+btc_relay = "Hxi8gVTapMURmBMdRRz91DpFZeSKjrEC6rm91q26ZWWu"
 
 [programs.mainnet]
-btc_relay = "3eMqZdqBdViYtboCkdMKFbduiy923D3TpJ8zDDyg7kxs"
+btc_relay = "Hxi8gVTapMURmBMdRRz91DpFZeSKjrEC6rm91q26ZWWu"
 
 [registry]
 url = "https://api.apr.dev"
@@ -19,3 +19,7 @@ wallet = "anchor.json"
 
 [scripts]
 test = "yarn run ts-mocha -p ./tsconfig.json -t 1000000 tests/**/*.ts"
+
+[[test.genesis]]
+address = "metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s"
+program = "tests/genesis/spl_token_metadata.so"

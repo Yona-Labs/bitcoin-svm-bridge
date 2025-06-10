@@ -11,15 +11,15 @@ use bitcoin::hex::DisplayHex;
 use bitcoin::{Block, BlockHash, Txid};
 use bitcoincore_rpc::{Client as BitcoinRpcClient, Error as BtcRpcError, RpcApi};
 use btc_relay::accounts::{
-    BridgeWithdraw, FinalizeTx, InitBigTxVerify, Initialize, StoreTxBytes, SubmitBlockHeaders,
-    VerifyTransaction,
+    BridgeWithdraw, FinalizeTx, InitBigTxVerify, InitWbtcMeta, Initialize, StoreTxBytes,
+    SubmitBlockHeaders, VerifyTransaction,
 };
 use btc_relay::config::WBTC_MINT_SEED;
 use btc_relay::instruction::{
     BridgeWithdraw as BridgeWithdrawInstruction, FinalizeTxProcessing,
-    InitBigTxVerify as InitBigTxVerifyInstruction, Initialize as InitializeInstruction,
-    StoreTxBytes as StoreTxBytesInstruction, SubmitBlockHeaders as SubmitBlockHeadersInstruction,
-    VerifySmallTx as VerifySmallTxInstruction,
+    InitBigTxVerify as InitBigTxVerifyInstruction, InitWbtcMeta as InitWbtcMetaIx,
+    Initialize as InitializeInstruction, StoreTxBytes as StoreTxBytesInstruction,
+    SubmitBlockHeaders as SubmitBlockHeadersInstruction, VerifySmallTx as VerifySmallTxInstruction,
 };
 use btc_relay::state::{DepositTxState as ProgramDepositTxState, MainState, TxState};
 use btc_relay::structs::{BlockHeader, CommittedBlockHeader};
@@ -111,6 +111,15 @@ pub fn init_program(
 
     let (wbtc_mint, _) = Pubkey::find_program_address(&[WBTC_MINT_SEED], &program.id());
 
+    let (wbtc_metadata, _) = Pubkey::find_program_address(
+        &[
+            b"metadata".as_slice(),
+            anchor_spl::metadata::ID.as_ref(),
+            wbtc_mint.as_ref(),
+        ],
+        &anchor_spl::metadata::ID,
+    );
+
     let res = program
         .request()
         .accounts(Initialize {
@@ -120,6 +129,7 @@ pub fn init_program(
             header_topic,
             system_program: anchor_client::solana_sdk::system_program::ID,
             token_program: anchor_spl::token::ID,
+            rent: anchor_client::solana_sdk::rent::sysvar::ID,
         })
         .args(InitializeInstruction {
             data: yona_block_header,
@@ -135,6 +145,23 @@ pub fn init_program(
         "Submitted block {}, tx sig {res}",
         block_hash.to_lower_hex_string()
     );
+
+    let meta_res = program
+        .request()
+        .accounts(InitWbtcMeta {
+            signer: program.payer(),
+            main_state,
+            wbtc_mint,
+            wbtc_metadata,
+            token_metadata_program: anchor_spl::metadata::ID,
+            system_program: anchor_client::solana_sdk::system_program::ID,
+            token_program: anchor_spl::token::ID,
+            rent: anchor_client::solana_sdk::rent::sysvar::ID,
+        })
+        .args(InitWbtcMetaIx {})
+        .send()?;
+
+    info!("Initialized wBTC metadata, tx sig {meta_res}");
 
     Ok(res)
 }

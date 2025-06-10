@@ -4,6 +4,7 @@ use crate::structs::*;
 
 use anchor_lang::prelude::*;
 use anchor_spl::associated_token::AssociatedToken;
+use anchor_spl::metadata::Metadata;
 use anchor_spl::token::{Mint, Token, TokenAccount};
 
 #[derive(Accounts)]
@@ -39,6 +40,30 @@ pub struct Initialize<'info> {
     pub header_topic: AccountInfo<'info>,
     pub system_program: Program<'info, System>,
     pub token_program: Program<'info, Token>,
+    pub rent: Sysvar<'info, Rent>,
+}
+
+#[derive(Accounts)]
+pub struct InitWbtcMeta<'info> {
+    #[account(mut)]
+    pub signer: Signer<'info>,
+    #[account(
+        seeds = [STATE_SEED],
+        bump,
+    )]
+    pub main_state: AccountLoader<'info, MainState>,
+    #[account(
+        seeds = [WBTC_MINT_SEED],
+        bump,
+    )]
+    pub wbtc_mint: Account<'info, Mint>,
+    /// CHECK: This is the metadata account that will be created
+    #[account(mut)]
+    pub wbtc_metadata: UncheckedAccount<'info>,
+    pub token_metadata_program: Program<'info, Metadata>,
+    pub system_program: Program<'info, System>,
+    pub token_program: Program<'info, Token>,
+    pub rent: Sysvar<'info, Rent>,
 }
 
 #[derive(Accounts)]

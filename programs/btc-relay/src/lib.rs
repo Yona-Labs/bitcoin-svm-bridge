@@ -1,4 +1,6 @@
 use anchor_lang::prelude::*;
+use anchor_spl::metadata::mpl_token_metadata::types::DataV2;
+use anchor_spl::metadata::{create_metadata_accounts_v3, CreateMetadataAccountsV3};
 use anchor_spl::token::{burn, mint_to, Burn, MintTo};
 use bitcoin::address::Address;
 use bitcoin::consensus::Decodable;
@@ -24,7 +26,7 @@ pub mod state;
 pub mod structs;
 pub mod utils;
 
-declare_id!("3eMqZdqBdViYtboCkdMKFbduiy923D3TpJ8zDDyg7kxs");
+declare_id!("Hxi8gVTapMURmBMdRRz91DpFZeSKjrEC6rm91q26ZWWu");
 
 #[program]
 pub mod btc_relay {
@@ -78,6 +80,43 @@ pub mod btc_relay {
             commit_hash: hash_result,
             header: commited_header
         });
+
+        Ok(())
+    }
+
+    pub fn init_wbtc_meta(ctx: Context<InitWbtcMeta>) -> Result<()> {
+        // Initialize token metadata for wbtc_mint
+
+        let wbtc_data = DataV2 {
+            name: "Wrapped Bitcoin".to_string(),
+            symbol: "wBTC".to_string(),
+            uri: "https://yona-static.fra1.cdn.digitaloceanspaces.com/bitcoin.json".to_string(),
+            seller_fee_basis_points: 0,
+            creators: None,
+            collection: None,
+            uses: None,
+        };
+
+        let seeds = [STATE_SEED, &[ctx.bumps.main_state]];
+        let signer_seeds = &[&seeds[..]];
+
+        let main_state_info = ctx.accounts.main_state.to_account_info();
+
+        let metadata_ctx = CpiContext::new_with_signer(
+            ctx.accounts.token_metadata_program.to_account_info(),
+            CreateMetadataAccountsV3 {
+                payer: ctx.accounts.signer.to_account_info(),
+                update_authority: main_state_info.clone(),
+                mint: ctx.accounts.wbtc_mint.to_account_info(),
+                metadata: ctx.accounts.wbtc_metadata.to_account_info(),
+                mint_authority: main_state_info,
+                system_program: ctx.accounts.system_program.to_account_info(),
+                rent: ctx.accounts.rent.to_account_info(),
+            },
+            signer_seeds,
+        );
+
+        create_metadata_accounts_v3(metadata_ctx, wbtc_data, true, true, None)?;
 
         Ok(())
     }

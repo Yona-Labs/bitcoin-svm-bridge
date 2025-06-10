@@ -24,6 +24,6 @@ overflow-checks = true
 
 [dependencies]
 anchor-lang = { version = "=0.31.1", features = ["init-if-needed"] }
-anchor-spl = "=0.31.1"
+anchor-spl = { version = "=0.31.1", features = ["metadata"] }
 bitcoin = { version = "=0.32.2", default-features = false }
 bytemuck = { version = "1.14.0", features = ["min_const_generics", "derive"] }
