@@ -267,7 +267,7 @@ impl From<AnchorClientError> for DepositError {
 
 struct RelayTransactionsState {
     relay_program: Program<Arc<Keypair>>,
-    bitcoin_rpc_client: BitcoinRpcClient,
+    bitcoin_rpc_client: Arc<BitcoinRpcClient>,
     deposit_pubkey_hash: [u8; 20],
     main_state: Pubkey,
 }
@@ -294,7 +294,7 @@ async fn relay_tx_web_api(
     let relay_tx_res = relay_tx(
         &data.relay_program,
         data.main_state,
-        &data.bitcoin_rpc_client,
+        data.bitcoin_rpc_client.clone(),
         tx_id,
         mint_receiver,
     )
@@ -413,7 +413,7 @@ pub async fn relay_transactions(config: RelayConfig, deposit_pubkey_hash: [u8; 2
 
     let app_state = web::Data::new(RelayTransactionsState {
         relay_program,
-        bitcoin_rpc_client,
+        bitcoin_rpc_client: Arc::new(bitcoin_rpc_client),
         main_state,
         deposit_pubkey_hash,
     });

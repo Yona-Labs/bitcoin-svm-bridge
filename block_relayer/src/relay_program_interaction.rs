@@ -238,7 +238,7 @@ impl From<BtcRpcError> for RelayTxError {
 pub async fn relay_tx(
     program: &Program<Arc<Keypair>>,
     main_state: Pubkey,
-    bitcoind_client: &BitcoinRpcClient,
+    bitcoind_client: Arc<BitcoinRpcClient>,
     tx_id: Txid,
     wbtc_receiver_sol: Pubkey,
 ) -> Result<Signature, RelayTxError> {
@@ -253,24 +253,33 @@ pub async fn relay_tx(
     let main_state_data = MainState::try_deserialize(&mut &raw_account.data[..8160])
         .map_err(AnchorClientError::from)?;
 
+    let client_clone = bitcoind_client.clone();
     let transaction =
-        tokio::task::block_in_place(|| bitcoind_client.get_raw_transaction_info(&tx_id, None))?;
+        tokio::task::spawn_blocking(move || client_clone.get_raw_transaction_info(&tx_id, None))
+            .await
+            .expect("no panic")?;
 
     let block_hash = match transaction.blockhash {
         Some(hash) => hash,
         _ => return Err(RelayTxError::TxIsNotIncludedToBlock),
     };
 
-    let block_info = tokio::task::block_in_place(|| bitcoind_client.get_block_info(&block_hash))?;
+    let client_clone = bitcoind_client.clone();
+    let block_info = tokio::task::spawn_blocking(move || client_clone.get_block_info(&block_hash))
+        .await
+        .expect("no panic")?;
 
-    let commited_header = tokio::task::block_in_place(|| {
+    let client_clone = bitcoind_client.clone();
+    let commited_header = tokio::task::spawn_blocking(move || {
         reconstruct_commited_header(
-            &bitcoind_client,
+            &client_clone,
             &block_hash,
             block_info.height as u32,
             main_state_data.last_diff_adjustment,
         )
-    })?;
+    })
+    .await
+    .expect("no panic")?;
 
     let tx_pos = block_info
         .tx
