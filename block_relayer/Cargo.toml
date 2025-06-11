@@ -7,7 +7,7 @@ edition = "2021"
 name = "block_relayer_lib"
 
 [dependencies]
-anchor-client = "=0.31.1"
+anchor-client = { version = "=0.31.1", features = ["async"] }
 anchor-spl = "=0.31.1"
 actix-cors = "0.7.0"
 actix-web = "4"

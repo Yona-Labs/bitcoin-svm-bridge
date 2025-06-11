@@ -64,7 +64,7 @@ pub fn get_yona_client(
     ))
 }
 
-pub fn relay_blocks_from_full_node(config: RelayConfig, wait_for_new_block: u64) {
+pub async fn relay_blocks_from_full_node(config: RelayConfig, wait_for_new_block: u64) {
     let yona_client = get_yona_client(&config).expect("Couldn't create Yona client");
 
     let bitcoind_client = BitcoinRpcClient::new(&config.bitcoind_url, config.bitcoin_auth.into())
@@ -78,11 +78,11 @@ pub fn relay_blocks_from_full_node(config: RelayConfig, wait_for_new_block: u64)
     let (main_state, _) = Pubkey::find_program_address(&[b"state"], &relay_program);
 
     loop {
-        let raw_account = match program.rpc().get_account(&main_state) {
+        let raw_account = match program.rpc().get_account(&main_state).await {
             Ok(acc) => acc,
             Err(e) => {
                 error!("Error {e} on get_account(main_state)");
-                thread::sleep(Duration::from_secs(10));
+                tokio::time::sleep(Duration::from_secs(10)).await;
                 continue;
             }
         };
@@ -93,22 +93,24 @@ pub fn relay_blocks_from_full_node(config: RelayConfig, wait_for_new_block: u64)
                 Ok(data) => data,
                 Err(e) => {
                     error!("Error {e} on main_state deserialization attempt");
-                    thread::sleep(Duration::from_secs(10));
+                    tokio::time::sleep(Duration::from_secs(10)).await;
                     continue;
                 }
             };
 
         let mut block_hash = main_state_data.tip_block_hash;
-        let commited_header = match reconstruct_commited_header(
-            &bitcoind_client,
-            &BlockHash::from_byte_array(block_hash),
-            main_state_data.block_height,
-            main_state_data.last_diff_adjustment,
-        ) {
+        let commited_header = match tokio::task::block_in_place(|| {
+            reconstruct_commited_header(
+                &bitcoind_client,
+                &BlockHash::from_byte_array(block_hash),
+                main_state_data.block_height,
+                main_state_data.last_diff_adjustment,
+            )
+        }) {
             Ok(header) => header,
             Err(e) => {
                 error!("Error {e} on reconstruct_commited_header");
-                thread::sleep(Duration::from_secs(10));
+                tokio::time::sleep(Duration::from_secs(10)).await;
                 continue;
             }
         };
@@ -128,46 +130,53 @@ pub fn relay_blocks_from_full_node(config: RelayConfig, wait_for_new_block: u64)
 
         let last_submitted_height = stored_header.header.blockheight;
 
-        let best_block_hash = match bitcoind_client.get_best_block_hash() {
-            Ok(hash) => hash,
-            Err(e) => {
-                error!("Error {e} on Bitcoin's get_best_block_hash");
-                thread::sleep(Duration::from_secs(10));
-                continue;
-            }
-        };
+        let best_block_hash =
+            match tokio::task::block_in_place(|| bitcoind_client.get_best_block_hash()) {
+                Ok(hash) => hash,
+                Err(e) => {
+                    error!("Error {e} on Bitcoin's get_best_block_hash");
+                    tokio::time::sleep(Duration::from_secs(10)).await;
+                    continue;
+                }
+            };
 
-        let best_block_height = match bitcoind_client.get_block_info(&best_block_hash) {
+        let best_block_height = match tokio::task::block_in_place(|| {
+            bitcoind_client.get_block_info(&best_block_hash)
+        }) {
             Ok(info) => info.height as u32,
             Err(e) => {
                 error!("Error {e} on Bitcoin's get_block_info({best_block_hash:02x})");
-                thread::sleep(Duration::from_secs(10));
+                tokio::time::sleep(Duration::from_secs(10)).await;
                 continue;
             }
         };
 
         if last_submitted_height >= best_block_height {
             info!("Latest BTC block {best_block_height} is already submitted to Yona. Waiting for a new one.");
-            thread::sleep(Duration::from_secs(wait_for_new_block));
+            tokio::time::sleep(Duration::from_secs(wait_for_new_block)).await;
             continue;
         }
 
         let new_height = last_submitted_height + 1;
 
-        let block_hash_to_submit = match bitcoind_client.get_block_hash(new_height as u64) {
-            Ok(hash) => hash,
-            Err(e) => {
-                error!("Error {e} on Bitcoin's get_block_hash({new_height})");
-                thread::sleep(Duration::from_secs(10));
-                continue;
-            }
-        };
+        let block_hash_to_submit =
+            match tokio::task::block_in_place(|| bitcoind_client.get_block_hash(new_height as u64))
+            {
+                Ok(hash) => hash,
+                Err(e) => {
+                    error!("Error {e} on Bitcoin's get_block_hash({new_height})");
+                    tokio::time::sleep(Duration::from_secs(10)).await;
+                    continue;
+                }
+            };
 
-        let block_to_submit = match bitcoind_client.get_block(&block_hash_to_submit) {
+        let block_to_submit = match tokio::task::block_in_place(|| {
+            bitcoind_client.get_block(&block_hash_to_submit)
+        }) {
             Ok(block) => block,
             Err(e) => {
                 error!("Error {e} on Bitcoin's get_block({block_hash_to_submit:02x})");
-                thread::sleep(Duration::from_secs(10));
+                tokio::time::sleep(Duration::from_secs(10)).await;
                 continue;
             }
         };
@@ -178,9 +187,11 @@ pub fn relay_blocks_from_full_node(config: RelayConfig, wait_for_new_block: u64)
             block_to_submit,
             new_height,
             stored_header.header,
-        ) {
+        )
+        .await
+        {
             error!("Error {e:?} on block submit attempt");
-            thread::sleep(Duration::from_secs(10));
+            tokio::time::sleep(Duration::from_secs(10)).await;
             continue;
         }
     }
@@ -215,7 +226,7 @@ impl From<InitError> for InitProgramError {
 }
 
 /// Initializes BTC relay program using the current Bitcoin tip (latest block)
-pub fn run_init_program(
+pub async fn run_init_program(
     config: RelayConfig,
     deposit_pubkey_hash: [u8; 20],
 ) -> Result<Signature, InitProgramError> {
@@ -226,10 +237,10 @@ pub fn run_init_program(
     let relay_program = BtcRelay::id();
     let program = yona_client.program(relay_program)?;
 
-    let tip = bitcoind_client.get_chain_tips()?.remove(0);
+    let tip = tokio::task::block_in_place(|| bitcoind_client.get_chain_tips())?.remove(0);
     debug!("Current bitcoin tip {tip:?}");
 
-    let last_block = bitcoind_client.get_block(&tip.hash)?;
+    let last_block = tokio::task::block_in_place(|| bitcoind_client.get_block(&tip.hash))?;
     debug!("Bitcoin last block {last_block:?}");
 
     Ok(init_program(
@@ -238,7 +249,8 @@ pub fn run_init_program(
         last_block,
         tip.height as u32,
         deposit_pubkey_hash,
-    )?)
+    )
+    .await?)
 }
 
 #[derive(Debug)]
@@ -279,17 +291,14 @@ async fn relay_tx_web_api(
         Err(_) => return HttpResponse::BadRequest().json("yona_address is not valid"),
     };
 
-    let relay_tx_res = spawn_blocking(move || {
-        relay_tx(
-            &data.relay_program,
-            data.main_state,
-            &data.bitcoin_rpc_client,
-            tx_id,
-            mint_receiver,
-        )
-    })
-    .await
-    .expect("relay_tx to not panic");
+    let relay_tx_res = relay_tx(
+        &data.relay_program,
+        data.main_state,
+        &data.bitcoin_rpc_client,
+        tx_id,
+        mint_receiver,
+    )
+    .await;
 
     match relay_tx_res {
         Ok(sig) => HttpResponse::Ok().json(format!("{sig}")),
@@ -320,9 +329,7 @@ async fn get_tx_state_web_api(
         Err(_) => return HttpResponse::BadRequest().json("tx_id is not valid"),
     };
 
-    let deposit_tx_state_res = spawn_blocking(move || deposit_tx_state(&data.relay_program, tx_id))
-        .await
-        .expect("deposit_tx_state to not panic");
+    let deposit_tx_state_res = deposit_tx_state(&data.relay_program, tx_id).await;
 
     match deposit_tx_state_res {
         Ok(state) => HttpResponse::Ok().json(DepositTxStateResult {
@@ -350,21 +357,15 @@ async fn get_tx_states_web_api(
         Err(_) => return HttpResponse::BadRequest().json("tx_id is not valid"),
     };
 
-    let deposit_tx_state_fut = tx_ids.into_iter().map(|tx_id| {
-        spawn_blocking({
-            let data = data.clone();
-            move || deposit_tx_state(&data.relay_program, tx_id)
-        })
-    });
+    let deposit_tx_state_fut = tx_ids
+        .into_iter()
+        .map(|tx_id| deposit_tx_state(&data.relay_program, tx_id));
 
     let deposit_tx_state_results: Result<Vec<_>, _> = join_all(deposit_tx_state_fut)
         .await
         .into_iter()
         .zip(req.into_inner().tx_ids.into_iter())
-        .map(|(res, tx_id)| {
-            res.expect("no panic")
-                .map(|status| DepositTxStateResult { tx_id, status })
-        })
+        .map(|(res, tx_id)| res.map(|status| DepositTxStateResult { tx_id, status }))
         .collect();
 
     match deposit_tx_state_results {
@@ -434,13 +435,12 @@ pub async fn relay_transactions(config: RelayConfig, deposit_pubkey_hash: [u8; 2
     .expect("HTTP server hasn't gracefully stop");
 }
 
-pub fn process_bridge_events(
+pub async fn process_bridge_events(
     config: RelayConfig,
     pool: SqlitePool,
     bridge_privkey: PrivateKey,
     bridge_pubkey: PublicKey,
     secp_context: Secp256k1<All>,
-    runtime: Runtime,
 ) {
     let yona_client = get_yona_client(&config).expect("Couldn't create Yona client");
 
@@ -463,29 +463,26 @@ pub fn process_bridge_events(
         let transactions_history = match program
             .rpc()
             .get_signatures_for_address_with_config(&btc_relay::id(), config)
+            .await
         {
             Ok(history) => history,
             Err(e) => {
                 log::error!("Error getting signatures for address: {}", e);
-                thread::sleep(Duration::from_secs(1));
+                tokio::time::sleep(Duration::from_secs(1)).await;
                 continue;
             }
         };
 
         for transaction in transactions_history {
-            if runtime
-                .block_on(solana_transaction_processed(&pool, &transaction.signature))
+            if solana_transaction_processed(&pool, &transaction.signature)
+                .await
                 .unwrap()
             {
                 continue;
             }
 
-            runtime
-                .block_on(insert_solana_transaction(
-                    &pool,
-                    &transaction.signature,
-                    transaction.slot as i64,
-                ))
+            insert_solana_transaction(&pool, &transaction.signature, transaction.slot as i64)
+                .await
                 .unwrap();
 
             let signature = Signature::from_str(&transaction.signature).unwrap();
@@ -494,10 +491,17 @@ pub fn process_bridge_events(
                 commitment: Some(CommitmentConfig::confirmed()),
                 max_supported_transaction_version: None,
             };
-            let last_transaction = program
+            let last_transaction = match program
                 .rpc()
                 .get_transaction_with_config(&signature, config)
-                .unwrap();
+                .await
+            {
+                Ok(tx) => tx,
+                Err(e) => {
+                    log::error!("Error {e} on get_transaction_with_config({signature})");
+                    continue;
+                }
+            };
 
             let messages = match last_transaction.transaction.meta.unwrap().log_messages {
                 OptionSerializer::Some(messages) => messages,
@@ -505,189 +509,190 @@ pub fn process_bridge_events(
             };
 
             const EVENT_PREFIX: &str = "Program data: ";
-            messages
+            for bytes in messages
                 .iter()
                 .filter_map(|msg| msg.strip_prefix(EVENT_PREFIX))
                 .filter_map(|maybe_base64| {
                     base64::prelude::BASE64_STANDARD.decode(maybe_base64).ok()
                 })
-                .for_each(|bytes| {
-                    if bytes.starts_with(&DepositTxVerified::DISCRIMINATOR) {
-                        let event = DepositTxVerified::try_from_slice(&bytes[8..]).unwrap();
-                        let bitcoin_tx = bitcoin_rpc_client
-                            .get_raw_transaction(&Txid::from_byte_array(event.tx_id), None)
-                            .expect("get_raw_transaction");
+            {
+                if bytes.starts_with(&DepositTxVerified::DISCRIMINATOR) {
+                    let event = DepositTxVerified::try_from_slice(&bytes[8..]).unwrap();
+                    let bitcoin_tx = bitcoin_rpc_client
+                        .get_raw_transaction(&Txid::from_byte_array(event.tx_id), None)
+                        .expect("get_raw_transaction");
 
-                        let deposit_script = bridge_deposit_script(
-                            event.wbtc_receiver_sol.to_bytes(),
-                            event.deposit_pubkey_hash,
-                        );
-                        let expected_script_pubkey =
-                            Address::p2wsh(deposit_script.as_script(), Network::Regtest)
-                                .script_pubkey();
+                    let deposit_script = bridge_deposit_script(
+                        event.wbtc_receiver_sol.to_bytes(),
+                        event.deposit_pubkey_hash,
+                    );
+                    let expected_script_pubkey =
+                        Address::p2wsh(deposit_script.as_script(), Network::Regtest)
+                            .script_pubkey();
 
-                        for (i, out) in bitcoin_tx.output.into_iter().enumerate() {
-                            if out.script_pubkey == expected_script_pubkey {
-                                let utxo = Utxo {
-                                    txid: event.tx_id,
-                                    vout: i as u32,
-                                    amount: out.value.to_sat(),
-                                    script_pubkey: expected_script_pubkey.to_bytes(),
-                                    yona_address: event.wbtc_receiver_sol.to_string(),
-                                    bridge_pubkey: vec![],
-                                    redeem_script: deposit_script.as_bytes().into(),
-                                };
-                                if let Err(e) = runtime.block_on(utxo.insert(&pool)) {
-                                    error!("Error on UTXO insertion {e:?}");
-                                }
-                            }
-                        }
-                    } else if bytes.starts_with(&Withdrawal::DISCRIMINATOR) {
-                        let event = Withdrawal::try_from_slice(&bytes[8..]).unwrap();
-                        info!("Got withdrawal event {event:?}");
-                        let available_utxos = match runtime.block_on(Utxo::get_all_utxos(&pool)) {
-                            Ok(utxos) => utxos,
-                            Err(e) => {
-                                error!("Error {e:?} on getting utxos");
-                                return;
-                            }
-                        };
-                        let address = Address::from_str(&event.bitcoin_address)
-                            .unwrap()
-                            .require_network(Network::Regtest)
-                            .unwrap();
-
-                        let tx_out = TxOut {
-                            value: Amount::from_sat(event.amount - 1000),
-                            script_pubkey: address.script_pubkey(),
-                        };
-
-                        let mut input = vec![];
-                        let mut collected_amount = 0;
-                        let mut inputs_utxos = vec![];
-
-                        for utxo in available_utxos {
-                            let previous_output = OutPoint {
-                                txid: Txid::from_byte_array(utxo.txid),
-                                vout: utxo.vout,
+                    for (i, out) in bitcoin_tx.output.into_iter().enumerate() {
+                        if out.script_pubkey == expected_script_pubkey {
+                            let utxo = Utxo {
+                                txid: event.tx_id,
+                                vout: i as u32,
+                                amount: out.value.to_sat(),
+                                script_pubkey: expected_script_pubkey.to_bytes(),
+                                yona_address: event.wbtc_receiver_sol.to_string(),
+                                bridge_pubkey: vec![],
+                                redeem_script: deposit_script.as_bytes().into(),
                             };
-                            input.push(TxIn {
-                                previous_output,
-                                script_sig: Default::default(),
-                                sequence: Sequence::MAX,
-                                witness: Default::default(),
-                            });
-
-                            collected_amount += utxo.amount;
-                            inputs_utxos.push(utxo);
-
-                            if collected_amount >= event.amount {
-                                break;
+                            if let Err(e) = utxo.insert(&pool).await {
+                                error!("Error on UTXO insertion {e:?}");
                             }
-                        }
-
-                        let change = collected_amount - event.amount;
-
-                        let bridge_script_pubkey = Address::p2wpkh(
-                            &bridge_pubkey
-                                .try_into()
-                                .expect("bridge_pubkey is compressed"),
-                            KnownHrp::Regtest,
-                        )
-                        .script_pubkey();
-                        let change_out = TxOut {
-                            value: Amount::from_sat(change),
-                            script_pubkey: bridge_script_pubkey.clone(),
-                        };
-
-                        let tx = Transaction {
-                            version: Version::TWO,
-                            lock_time: LockTime::ZERO,
-                            input,
-                            output: vec![tx_out, change_out],
-                        };
-
-                        let mut sig_hash_cache = SighashCache::new(tx);
-                        let mut witnesses = vec![];
-
-                        for (i, utxo) in inputs_utxos.into_iter().enumerate() {
-                            let sig_hash = if !utxo.redeem_script.is_empty() {
-                                sig_hash_cache
-                                    .p2wsh_signature_hash(
-                                        i,
-                                        Script::from_bytes(&utxo.redeem_script),
-                                        Amount::from_sat(utxo.amount),
-                                        EcdsaSighashType::All,
-                                    )
-                                    .unwrap()
-                            } else {
-                                sig_hash_cache
-                                    .p2wpkh_signature_hash(
-                                        i,
-                                        bridge_script_pubkey.as_script(),
-                                        Amount::from_sat(utxo.amount),
-                                        EcdsaSighashType::All,
-                                    )
-                                    .unwrap()
-                            };
-
-                            let message = Message::from(sig_hash);
-                            let signature =
-                                secp_context.sign_ecdsa(&message, &bridge_privkey.inner);
-
-                            let mut sig = signature.serialize_der().to_vec();
-                            sig.push(EcdsaSighashType::All as u8);
-
-                            let mut witness = Witness::new();
-                            witness.push(sig);
-                            witness.push(bridge_pubkey.to_bytes());
-                            if !utxo.redeem_script.is_empty() {
-                                witness.push(utxo.redeem_script);
-                            }
-                            witnesses.push(witness);
-                        }
-
-                        let mut tx = sig_hash_cache.into_transaction();
-                        for (input, witness) in tx.input.iter_mut().zip(witnesses) {
-                            input.witness = witness;
-                        }
-
-                        match bitcoin_rpc_client.send_raw_transaction(&tx) {
-                            Ok(id) => {
-                                info!("Processed bridge withdrawal, Bitcoin tx id {}", id);
-                                for input in tx.input.iter() {
-                                    runtime
-                                        .block_on(Utxo::delete_utxo(
-                                            &pool,
-                                            &input.previous_output.txid.to_byte_array(),
-                                            input.previous_output.vout,
-                                        ))
-                                        .unwrap();
-                                }
-
-                                let utxo = Utxo {
-                                    txid: tx.compute_txid().to_byte_array(),
-                                    vout: 1,
-                                    amount: tx.output[1].value.to_sat(),
-                                    script_pubkey: tx.output[1].script_pubkey.to_bytes(),
-                                    yona_address: "".into(),
-                                    bridge_pubkey: vec![],
-                                    redeem_script: vec![],
-                                };
-
-                                if let Err(e) = runtime.block_on(utxo.insert(&pool)) {
-                                    error!("Error on UTXO insertion {e:?}");
-                                }
-                            }
-                            Err(e) => error!("Error {e:?} on broadcasting Bitcoin tx"),
                         }
                     }
-                });
-            runtime
-                .block_on(set_transaction_processed(&pool, &transaction.signature))
+                } else if bytes.starts_with(&Withdrawal::DISCRIMINATOR) {
+                    let event = Withdrawal::try_from_slice(&bytes[8..]).unwrap();
+                    info!("Got withdrawal event {event:?}");
+                    let available_utxos = match Utxo::get_all_utxos(&pool).await {
+                        Ok(utxos) => utxos,
+                        Err(e) => {
+                            error!("Error {e:?} on getting utxos");
+                            return;
+                        }
+                    };
+                    let address = Address::from_str(&event.bitcoin_address)
+                        .unwrap()
+                        .require_network(Network::Regtest)
+                        .unwrap();
+
+                    let tx_out = TxOut {
+                        value: Amount::from_sat(event.amount - 1000),
+                        script_pubkey: address.script_pubkey(),
+                    };
+
+                    let mut input = vec![];
+                    let mut collected_amount = 0;
+                    let mut inputs_utxos = vec![];
+
+                    for utxo in available_utxos {
+                        let previous_output = OutPoint {
+                            txid: Txid::from_byte_array(utxo.txid),
+                            vout: utxo.vout,
+                        };
+                        input.push(TxIn {
+                            previous_output,
+                            script_sig: Default::default(),
+                            sequence: Sequence::MAX,
+                            witness: Default::default(),
+                        });
+
+                        collected_amount += utxo.amount;
+                        inputs_utxos.push(utxo);
+
+                        if collected_amount >= event.amount {
+                            break;
+                        }
+                    }
+
+                    let change = collected_amount - event.amount;
+
+                    let bridge_script_pubkey = Address::p2wpkh(
+                        &bridge_pubkey
+                            .try_into()
+                            .expect("bridge_pubkey is compressed"),
+                        KnownHrp::Regtest,
+                    )
+                    .script_pubkey();
+                    let change_out = TxOut {
+                        value: Amount::from_sat(change),
+                        script_pubkey: bridge_script_pubkey.clone(),
+                    };
+
+                    let tx = Transaction {
+                        version: Version::TWO,
+                        lock_time: LockTime::ZERO,
+                        input,
+                        output: vec![tx_out, change_out],
+                    };
+
+                    let mut sig_hash_cache = SighashCache::new(tx);
+                    let mut witnesses = vec![];
+
+                    for (i, utxo) in inputs_utxos.into_iter().enumerate() {
+                        let sig_hash = if !utxo.redeem_script.is_empty() {
+                            sig_hash_cache
+                                .p2wsh_signature_hash(
+                                    i,
+                                    Script::from_bytes(&utxo.redeem_script),
+                                    Amount::from_sat(utxo.amount),
+                                    EcdsaSighashType::All,
+                                )
+                                .unwrap()
+                        } else {
+                            sig_hash_cache
+                                .p2wpkh_signature_hash(
+                                    i,
+                                    bridge_script_pubkey.as_script(),
+                                    Amount::from_sat(utxo.amount),
+                                    EcdsaSighashType::All,
+                                )
+                                .unwrap()
+                        };
+
+                        let message = Message::from(sig_hash);
+                        let signature = secp_context.sign_ecdsa(&message, &bridge_privkey.inner);
+
+                        let mut sig = signature.serialize_der().to_vec();
+                        sig.push(EcdsaSighashType::All as u8);
+
+                        let mut witness = Witness::new();
+                        witness.push(sig);
+                        witness.push(bridge_pubkey.to_bytes());
+                        if !utxo.redeem_script.is_empty() {
+                            witness.push(utxo.redeem_script);
+                        }
+                        witnesses.push(witness);
+                    }
+
+                    let mut tx = sig_hash_cache.into_transaction();
+                    for (input, witness) in tx.input.iter_mut().zip(witnesses) {
+                        input.witness = witness;
+                    }
+
+                    match tokio::task::block_in_place(|| {
+                        bitcoin_rpc_client.send_raw_transaction(&tx)
+                    }) {
+                        Ok(id) => {
+                            info!("Processed bridge withdrawal, Bitcoin tx id {}", id);
+                            for input in tx.input.iter() {
+                                Utxo::delete_utxo(
+                                    &pool,
+                                    &input.previous_output.txid.to_byte_array(),
+                                    input.previous_output.vout,
+                                )
+                                .await
+                                .unwrap();
+                            }
+
+                            let utxo = Utxo {
+                                txid: tx.compute_txid().to_byte_array(),
+                                vout: 1,
+                                amount: tx.output[1].value.to_sat(),
+                                script_pubkey: tx.output[1].script_pubkey.to_bytes(),
+                                yona_address: "".into(),
+                                bridge_pubkey: vec![],
+                                redeem_script: vec![],
+                            };
+
+                            if let Err(e) = utxo.insert(&pool).await {
+                                error!("Error on UTXO insertion {e:?}");
+                            }
+                        }
+                        Err(e) => error!("Error {e:?} on broadcasting Bitcoin tx"),
+                    }
+                }
+            }
+            set_transaction_processed(&pool, &transaction.signature)
+                .await
                 .unwrap();
         }
 
-        thread::sleep(Duration::from_secs(1));
+        tokio::time::sleep(Duration::from_secs(1)).await;
     }
 }

@@ -46,6 +46,7 @@ fn main() {
     env_logger::init();
     let cli = RelayerCli::parse();
     let config = read_config().expect("Could not read config file");
+    let runtime = Runtime::new().expect("tokio runtime to be created");
 
     match cli.command {
         RelayerCommand::InitProgram { deposit_pubkey } => {
@@ -53,7 +54,8 @@ fn main() {
                 FromHex::from_hex(&deposit_pubkey).expect("Failed to decode pubkey");
             let pubkey_hash = Hash160::hash(&bridge_pubkey);
 
-            let result = run_init_program(config, pubkey_hash.to_byte_array())
+            let result = runtime
+                .block_on(run_init_program(config, pubkey_hash.to_byte_array()))
                 .expect("Relay program initialization failed");
             println!("Initialization tx signature {}", result);
         }
@@ -65,17 +67,9 @@ fn main() {
             let bridge_pubkey = private.public_key(&secp256k1);
             let pubkey_hash = Hash160::hash(&bridge_pubkey.to_bytes());
 
-            let runtime = Runtime::new().expect("tokio runtime to be created");
             runtime.spawn({
                 let config = config.clone();
-                async move { relay_transactions(config, pubkey_hash.to_byte_array()).await }
-            });
-
-            std::thread::spawn({
-                let config = config.clone();
-                move || {
-                    relay_blocks_from_full_node(config, 30);
-                }
+                relay_blocks_from_full_node(config, 30)
             });
 
             let sqlite_pool = runtime
@@ -86,14 +80,13 @@ fn main() {
                 .block_on(sqlx::migrate!("./migrations").run(&sqlite_pool))
                 .expect("Can't migrate");
 
-            process_bridge_events(
+            runtime.block_on(process_bridge_events(
                 config,
                 sqlite_pool,
                 private,
                 bridge_pubkey,
                 secp256k1,
-                runtime,
-            );
+            ));
         }
         RelayerCommand::GenerateKey => {
             let mut rng = rand::thread_rng();
@@ -117,8 +110,9 @@ fn main() {
                 .program(btc_relay::id())
                 .expect("Couldn't create relay program instance");
 
-            let result =
-                bridge_withdraw(&program, amount, bitcoin_address).expect("Successful withdrawal");
+            let result = runtime
+                .block_on(bridge_withdraw(&program, amount, bitcoin_address))
+                .expect("Successful withdrawal");
             println!("Withdraw result {result}");
         }
     }

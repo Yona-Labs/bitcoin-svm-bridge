@@ -129,33 +129,26 @@ static TEST_CTX: Lazy<TestCtx> = Lazy::new(|| {
     let secp256k1 = Secp256k1::new();
     let pubkey = bridge_privkey.public_key(&secp256k1);
 
-    let init_result = run_init_program(relay_config.clone(), pubkey.pubkey_hash().to_byte_array())
+    let init_result = TEST_RUNTIME
+        .block_on(run_init_program(
+            relay_config.clone(),
+            pubkey.pubkey_hash().to_byte_array(),
+        ))
         .expect("run_init_program");
     println!("Init result {}", init_result);
 
-    thread::spawn({
+    TEST_RUNTIME.spawn({
         let relay_config = relay_config.clone();
-        move || relay_blocks_from_full_node(relay_config, 1)
+        relay_blocks_from_full_node(relay_config, 1)
     });
 
     let pool = TEST_RUNTIME.block_on(init_test_pool());
 
-    let runtime = Runtime::new().expect("Tokio runtime to be created");
-
-    thread::spawn({
+    TEST_RUNTIME.spawn({
         let relay_config = relay_config.clone();
         let bridge_privkey = bridge_privkey.clone();
         let secp256k1 = secp256k1.clone();
-        move || {
-            process_bridge_events(
-                relay_config,
-                pool,
-                bridge_privkey,
-                pubkey,
-                secp256k1,
-                runtime,
-            )
-        }
+        process_bridge_events(relay_config, pool, bridge_privkey, pubkey, secp256k1)
     });
 
     TestCtx {
@@ -177,9 +170,8 @@ fn program_initialized() {
 
     let program = client.program(btc_relay::id()).expect("btc_relay program");
     // this call will work only if program is initialized
-    program
-        .rpc()
-        .get_account(&main_state)
+    TEST_RUNTIME
+        .block_on(program.rpc().get_account(&main_state))
         .expect("get main state account");
 }
 
@@ -245,26 +237,31 @@ fn relay_transaction() {
     thread::sleep(Duration::from_secs(10));
 
     // verify state
-    let tx_state = deposit_tx_state(&program, deposit_tx_id).expect("deposit_tx_state");
+    let tx_state = TEST_RUNTIME
+        .block_on(deposit_tx_state(&program, deposit_tx_id))
+        .expect("deposit_tx_state");
     assert!(matches!(tx_state, DepositTxState::NotRelayed));
 
     let (main_state, _) = Pubkey::find_program_address(&[b"state"], &btc_relay::id());
-    relay_tx(
-        &program,
-        main_state,
-        &bitcoin_client,
-        deposit_tx_id,
-        program.payer().key(),
-    )
-    .expect("relay_tx");
+    TEST_RUNTIME
+        .block_on(relay_tx(
+            &program,
+            main_state,
+            &bitcoin_client,
+            deposit_tx_id,
+            program.payer().key(),
+        ))
+        .expect("relay_tx");
 
     // give event some time to be processed
     thread::sleep(Duration::from_secs(5));
 
-    let tx_state = deposit_tx_state(&program, deposit_tx_id).expect("deposit_tx_state");
+    let tx_state = TEST_RUNTIME
+        .block_on(deposit_tx_state(&program, deposit_tx_id))
+        .expect("deposit_tx_state");
     assert!(matches!(tx_state, DepositTxState::Relayed));
 
-    let wbtc_mint_account: Mint = program.account(wbtc_mint).unwrap();
+    let wbtc_mint_account: Mint = TEST_RUNTIME.block_on(program.account(wbtc_mint)).unwrap();
     assert_eq!(wbtc_mint_account.supply, Amount::ONE_BTC.to_sat());
 
     let big_deposit_tx_id = bitcoin_client
@@ -285,47 +282,58 @@ fn relay_transaction() {
     thread::sleep(Duration::from_secs(10));
 
     // verify state
-    let tx_state = deposit_tx_state(&program, big_deposit_tx_id).expect("deposit_tx_state");
+    let tx_state = TEST_RUNTIME
+        .block_on(deposit_tx_state(&program, big_deposit_tx_id))
+        .expect("deposit_tx_state");
     assert!(matches!(tx_state, DepositTxState::NotRelayed));
 
-    relay_tx(
-        &program,
-        main_state,
-        &bitcoin_client,
-        big_deposit_tx_id,
-        program.payer().key(),
-    )
-    .expect("relay_tx big_deposit_tx_id");
+    TEST_RUNTIME
+        .block_on(relay_tx(
+            &program,
+            main_state,
+            &bitcoin_client,
+            big_deposit_tx_id,
+            program.payer().key(),
+        ))
+        .expect("relay_tx big_deposit_tx_id");
 
     // give event some time to be processed
     thread::sleep(Duration::from_secs(5));
 
     // verify state
-    let tx_state = deposit_tx_state(&program, big_deposit_tx_id).expect("deposit_tx_state");
+    let tx_state = TEST_RUNTIME
+        .block_on(deposit_tx_state(&program, big_deposit_tx_id))
+        .expect("deposit_tx_state");
     assert!(matches!(tx_state, DepositTxState::Relayed));
 
-    let wbtc_mint_account: Mint = program.account(wbtc_mint).unwrap();
+    let wbtc_mint_account: Mint = TEST_RUNTIME.block_on(program.account(wbtc_mint)).unwrap();
     assert_eq!(wbtc_mint_account.supply, Amount::from_int_btc(401).to_sat());
 
-    bridge_withdraw(
-        &program,
-        Amount::from_int_btc(10).to_sat(),
-        bitcoin_address.into(),
-    )
-    .expect("bridge_withdraw");
+    TEST_RUNTIME
+        .block_on(bridge_withdraw(
+            &program,
+            Amount::from_int_btc(10).to_sat(),
+            bitcoin_address.into(),
+        ))
+        .expect("bridge_withdraw");
 
     // give event some time to be processed
     thread::sleep(Duration::from_secs(10));
 
-    let wbtc_mint_account: Mint = program.account(wbtc_mint).unwrap();
+    let wbtc_mint_account: Mint = TEST_RUNTIME.block_on(program.account(wbtc_mint)).unwrap();
     assert_eq!(wbtc_mint_account.supply, Amount::from_int_btc(391).to_sat());
 
-    bridge_withdraw(&program, Amount::ONE_BTC.to_sat(), bitcoin_address.into())
+    TEST_RUNTIME
+        .block_on(bridge_withdraw(
+            &program,
+            Amount::ONE_BTC.to_sat(),
+            bitcoin_address.into(),
+        ))
         .expect("bridge_withdraw");
     // give event some time to be processed
     thread::sleep(Duration::from_secs(10));
 
-    let wbtc_mint_account: Mint = program.account(wbtc_mint).unwrap();
+    let wbtc_mint_account: Mint = TEST_RUNTIME.block_on(program.account(wbtc_mint)).unwrap();
     assert_eq!(wbtc_mint_account.supply, Amount::from_int_btc(390).to_sat());
 
     let balance_after = get_address_balance(bitcoin_address);

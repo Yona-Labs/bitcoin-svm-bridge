@@ -77,7 +77,7 @@ impl From<BtcRpcError> for InitError {
     }
 }
 
-pub fn init_program(
+pub async fn init_program(
     program: &Program<Arc<Keypair>>,
     bitcoind_client: &BitcoinRpcClient,
     block: Block,
@@ -139,7 +139,8 @@ pub fn init_program(
             prev_block_timestamps,
             deposit_pubkey_hash,
         })
-        .send()?;
+        .send()
+        .await?;
 
     info!(
         "Submitted block {}, tx sig {res}",
@@ -159,14 +160,15 @@ pub fn init_program(
             rent: anchor_client::solana_sdk::rent::sysvar::ID,
         })
         .args(InitWbtcMetaIx {})
-        .send()?;
+        .send()
+        .await?;
 
     info!("Initialized wBTC metadata, tx sig {meta_res}");
 
     Ok(res)
 }
 
-pub(crate) fn submit_block(
+pub(crate) async fn submit_block(
     program: &Program<Arc<Keypair>>,
     main_state: Pubkey,
     block: Block,
@@ -199,7 +201,8 @@ pub(crate) fn submit_block(
             data: vec![yona_block_header],
             commited_header,
         })
-        .send()?;
+        .send()
+        .await?;
 
     block_hash.reverse();
     info!(
@@ -230,7 +233,7 @@ impl From<BtcRpcError> for RelayTxError {
     }
 }
 
-pub fn relay_tx(
+pub async fn relay_tx(
     program: &Program<Arc<Keypair>>,
     main_state: Pubkey,
     bitcoind_client: &BitcoinRpcClient,
@@ -243,6 +246,7 @@ pub fn relay_tx(
     let raw_account = program
         .rpc()
         .get_account(&main_state)
+        .await
         .map_err(AnchorClientError::from)?;
     let main_state_data = MainState::try_deserialize(&mut &raw_account.data[..8160])
         .map_err(AnchorClientError::from)?;
@@ -290,7 +294,8 @@ pub fn relay_tx(
                 reversed_merkle_proof,
                 tx_size: transaction.hex.len() as u64,
             })
-            .send()?;
+            .send()
+            .await?;
 
         for chunk in transaction.hex.chunks(800) {
             program
@@ -303,7 +308,8 @@ pub fn relay_tx(
                     tx_id,
                     bytes: chunk.to_vec(),
                 })
-                .send()?;
+                .send()
+                .await?;
         }
 
         let res = program
@@ -321,7 +327,8 @@ pub fn relay_tx(
                 system_program: anchor_client::solana_sdk::system_program::ID,
             })
             .args(FinalizeTxProcessing { tx_id })
-            .send()?;
+            .send()
+            .await?;
 
         Ok(res)
     } else {
@@ -346,13 +353,14 @@ pub fn relay_tx(
                 commited_header,
                 reversed_merkle_proof,
             })
-            .send()?;
+            .send()
+            .await?;
 
         Ok(res)
     }
 }
 
-pub fn bridge_withdraw(
+pub async fn bridge_withdraw(
     program: &Program<Arc<Keypair>>,
     amount: u64,
     bitcoin_address: String,
@@ -373,7 +381,8 @@ pub fn bridge_withdraw(
             amount,
             bitcoin_address,
         })
-        .send()?;
+        .send()
+        .await?;
 
     Ok(res)
 }
@@ -393,14 +402,14 @@ impl fmt::Display for DepositTxState {
     }
 }
 
-pub fn deposit_tx_state(
+pub async fn deposit_tx_state(
     program: &Program<Arc<Keypair>>,
     tx_id: Txid,
 ) -> Result<DepositTxState, AnchorClientError> {
     let (tx_account, _) =
         Pubkey::find_program_address(&[tx_id.to_byte_array().as_slice()], &program.id());
 
-    match program.account::<ProgramDepositTxState>(tx_account) {
+    match program.account::<ProgramDepositTxState>(tx_account).await {
         Ok(state) => match state.state {
             TxState::VerificationInitialized => Ok(DepositTxState::NotRelayed),
             TxState::VerificationComplete => Ok(DepositTxState::Relayed),
