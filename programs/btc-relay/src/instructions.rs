@@ -1,7 +1,11 @@
-use anchor_lang::prelude::*;
-
+use crate::config::*;
 use crate::state::*;
 use crate::structs::*;
+
+use anchor_lang::prelude::*;
+use anchor_spl::associated_token::AssociatedToken;
+use anchor_spl::metadata::Metadata;
+use anchor_spl::token::{Mint, Token, TokenAccount};
 
 #[derive(Accounts)]
 #[instruction(
@@ -10,34 +14,65 @@ use crate::structs::*;
 pub struct Initialize<'info> {
     #[account(mut)]
     pub signer: Signer<'info>,
-
     #[account(
         init,
-        seeds = [b"state".as_ref()],
+        seeds = [STATE_SEED],
         bump,
         payer = signer,
         space = MainState::space()
     )]
     pub main_state: AccountLoader<'info, MainState>,
-
+    #[account(
+        init,
+        seeds = [WBTC_MINT_SEED],
+        bump,
+        payer = signer,
+        mint::decimals = 8,
+        mint::authority = main_state,
+        mint::freeze_authority = main_state
+    )]
+    pub wbtc_mint: Account<'info, Mint>,
     /// CHECK: This is only used for indexing purposes
     #[account(
         seeds = [b"header".as_ref(), data.get_block_hash()?.as_ref()],
         bump
     )]
     pub header_topic: AccountInfo<'info>,
-
     pub system_program: Program<'info, System>,
+    pub token_program: Program<'info, Token>,
+    pub rent: Sysvar<'info, Rent>,
+}
+
+#[derive(Accounts)]
+pub struct InitWbtcMeta<'info> {
+    #[account(mut)]
+    pub signer: Signer<'info>,
+    #[account(
+        seeds = [STATE_SEED],
+        bump,
+    )]
+    pub main_state: AccountLoader<'info, MainState>,
+    #[account(
+        seeds = [WBTC_MINT_SEED],
+        bump,
+    )]
+    pub wbtc_mint: Account<'info, Mint>,
+    /// CHECK: This is the metadata account that will be created
+    #[account(mut)]
+    pub wbtc_metadata: UncheckedAccount<'info>,
+    pub token_metadata_program: Program<'info, Metadata>,
+    pub system_program: Program<'info, System>,
+    pub token_program: Program<'info, Token>,
+    pub rent: Sysvar<'info, Rent>,
 }
 
 #[derive(Accounts)]
 pub struct SubmitBlockHeaders<'info> {
     #[account(mut)]
     pub signer: Signer<'info>,
-
     #[account(
         mut,
-        seeds = [b"state".as_ref()],
+        seeds = [STATE_SEED],
         bump
     )]
     pub main_state: AccountLoader<'info, MainState>,
@@ -47,10 +82,9 @@ pub struct SubmitBlockHeaders<'info> {
 pub struct SubmitShortForkHeaders<'info> {
     #[account(mut)]
     pub signer: Signer<'info>,
-
     #[account(
         mut,
-        seeds = [b"state".as_ref()],
+        seeds = [STATE_SEED],
         bump
     )]
     pub main_state: AccountLoader<'info, MainState>,
@@ -65,14 +99,12 @@ pub struct SubmitShortForkHeaders<'info> {
 pub struct SubmitForkHeaders<'info> {
     #[account(mut)]
     pub signer: Signer<'info>,
-
     #[account(
         mut,
-        seeds = [b"state".as_ref()],
+        seeds = [STATE_SEED],
         bump
     )]
     pub main_state: AccountLoader<'info, MainState>,
-
     #[account(
         init_if_needed,
         seeds = [b"fork".as_ref(), fork_id.to_le_bytes().as_ref(), signer.key.to_bytes().as_ref()],
@@ -81,7 +113,6 @@ pub struct SubmitForkHeaders<'info> {
         space = ForkState::space()
     )]
     pub fork_state: AccountLoader<'info, ForkState>,
-
     pub system_program: Program<'info, System>,
 }
 
@@ -103,18 +134,38 @@ pub struct CloseForkAccount<'info> {
 }
 
 #[derive(Accounts)]
+#[instruction(
+    tx_id: [u8; 32]
+)]
 pub struct VerifyTransaction<'info> {
     #[account(mut)]
     pub signer: Signer<'info>,
     #[account(
-        seeds = [b"state".as_ref()],
+        seeds = [STATE_SEED],
         bump
     )]
     pub main_state: AccountLoader<'info, MainState>,
-    #[account(mut, seeds = [b"solana_deposit".as_ref()], bump)]
-    pub deposit_account: AccountLoader<'info, DepositState>,
-    #[account(mut)]
-    pub mint_receiver: SystemAccount<'info>,
+    /// We don't need to store transaction bytes here
+    #[account(init, seeds = [tx_id.as_slice()], bump, payer = signer, space = DepositTxState::space(0))]
+    pub tx_account: Account<'info, DepositTxState>,
+    #[account()]
+    pub wbtc_receiver_sol: SystemAccount<'info>,
+    #[account(
+        mut,
+        seeds = [WBTC_MINT_SEED],
+        bump
+    )]
+    pub wbtc_mint: Account<'info, Mint>,
+    #[account(
+        init_if_needed,
+        payer = signer,
+        associated_token::mint = wbtc_mint,
+        associated_token::authority = wbtc_receiver_sol
+    )]
+    pub wbtc_receiver: Account<'info, TokenAccount>,
+    pub associated_token_program: Program<'info, AssociatedToken>,
+    pub token_program: Program<'info, Token>,
+    pub system_program: Program<'info, System>,
 }
 
 #[derive(Accounts)]
@@ -122,21 +173,10 @@ pub struct BlockHeight<'info> {
     #[account(mut)]
     pub signer: Signer<'info>,
     #[account(
-        seeds = [b"state".as_ref()],
+        seeds = [STATE_SEED],
         bump
     )]
     pub main_state: AccountLoader<'info, MainState>,
-}
-
-#[derive(Accounts)]
-pub struct Deposit<'info> {
-    /// The user account initiating the deposit.
-    #[account(mut)]
-    pub signer: Signer<'info>,
-    /// The program's account to receive the deposit. This should be a derived PDA (Program Derived Address).
-    #[account(init, seeds = [b"solana_deposit".as_ref()], bump, payer = signer, space = 8 + 1)]
-    pub deposit_account: AccountLoader<'info, DepositState>,
-    pub system_program: Program<'info, System>,
 }
 
 #[derive(Accounts)]
@@ -149,11 +189,11 @@ pub struct InitBigTxVerify<'info> {
     #[account(mut)]
     pub signer: Signer<'info>,
     /// The program's account used to store transaction's data. This should be a derived PDA (Program Derived Address).
-    #[account(init, seeds = [tx_id.as_slice()], bump, payer = signer, space = 8 + 4 + tx_size as usize)]
-    pub tx_account: Account<'info, BigTxState>,
+    #[account(init, seeds = [tx_id.as_slice()], bump, payer = signer, space = DepositTxState::space(tx_size))]
+    pub tx_account: Account<'info, DepositTxState>,
     pub system_program: Program<'info, System>,
     #[account(
-        seeds = [b"state".as_ref()],
+        seeds = [STATE_SEED],
         bump
     )]
     pub main_state: AccountLoader<'info, MainState>,
@@ -169,7 +209,7 @@ pub struct StoreTxBytes<'info> {
     pub signer: Signer<'info>,
     /// The program's account used to store transaction's data. This should be a derived PDA (Program Derived Address).
     #[account(mut, seeds = [tx_id.as_slice()], bump)]
-    pub tx_account: Account<'info, BigTxState>,
+    pub tx_account: Account<'info, DepositTxState>,
 }
 
 #[derive(Accounts)]
@@ -182,9 +222,48 @@ pub struct FinalizeTx<'info> {
     pub signer: Signer<'info>,
     /// The program's account used to store transaction's data. This should be a derived PDA (Program Derived Address).
     #[account(mut, seeds = [tx_id.as_slice()], bump)]
-    pub tx_account: Account<'info, BigTxState>,
-    #[account(mut, seeds = [b"solana_deposit".as_ref()], bump)]
-    pub deposit_account: AccountLoader<'info, DepositState>,
+    pub tx_account: Account<'info, DepositTxState>,
+    #[account()]
+    pub wbtc_receiver_sol: SystemAccount<'info>,
+    #[account(
+        mut,
+        seeds = [WBTC_MINT_SEED],
+        bump
+    )]
+    pub wbtc_mint: Account<'info, Mint>,
+    #[account(
+        init_if_needed,
+        payer = signer,
+        associated_token::mint = wbtc_mint,
+        associated_token::authority = wbtc_receiver_sol
+    )]
+    pub wbtc_receiver: Account<'info, TokenAccount>,
+    pub associated_token_program: Program<'info, AssociatedToken>,
+    pub token_program: Program<'info, Token>,
+    #[account(
+        seeds = [STATE_SEED],
+        bump
+    )]
+    pub main_state: AccountLoader<'info, MainState>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct BridgeWithdraw<'info> {
+    /// The user account initiating the withdrawal.
     #[account(mut)]
-    pub mint_receiver: SystemAccount<'info>,
+    pub signer: Signer<'info>,
+    #[account(
+        mut,
+        seeds = [WBTC_MINT_SEED],
+        bump
+    )]
+    pub wbtc_mint: Account<'info, Mint>,
+    #[account(
+        mut,
+        associated_token::mint = wbtc_mint,
+        associated_token::authority = signer,
+    )]
+    pub wbtc_account: Account<'info, TokenAccount>,
+    pub token_program: Program<'info, Token>,
 }

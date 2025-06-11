@@ -1,13 +1,24 @@
 use anchor_lang::prelude::*;
+use anchor_spl::metadata::mpl_token_metadata::types::DataV2;
+use anchor_spl::metadata::{create_metadata_accounts_v3, CreateMetadataAccountsV3};
+use anchor_spl::token::{burn, mint_to, Burn, MintTo};
+use bitcoin::address::Address;
 use bitcoin::consensus::Decodable;
+use bitcoin::hashes::Hash;
+use bitcoin::Network;
 use bitcoin::Transaction;
+use std::str::FromStr;
 
+use config::*;
 use errors::*;
 use events::*;
 use instructions::*;
+use state::TxState;
 use structs::*;
+use utils::bridge_mint_amount;
 
 mod arrayutils;
+pub mod config;
 mod errors;
 pub mod events;
 mod instructions;
@@ -15,12 +26,11 @@ pub mod state;
 pub mod structs;
 pub mod utils;
 
-declare_id!("3YS97dtVcWjXUnR8JrZUm1oACYdjhoNQEuMM7y7VdvTa");
+declare_id!("Hxi8gVTapMURmBMdRRz91DpFZeSKjrEC6rm91q26ZWWu");
 
 #[program]
 pub mod btc_relay {
     use super::*;
-    use crate::utils::bridge_mint_amount;
 
     // Initializes the program with the initial block header,
     // this can be any past block header with high enough confirmations to be sure it doesn't get re-orged.
@@ -31,12 +41,15 @@ pub mod btc_relay {
         chain_work: [u8; 32],
         last_diff_adjustment: u32,
         prev_block_timestamps: [u32; 10],
+        deposit_pubkey_hash: [u8; 20],
     ) -> Result<()> {
         let main_state = &mut ctx.accounts.main_state.load_init()?;
 
         main_state.last_diff_adjustment = last_diff_adjustment;
         main_state.block_height = block_height;
         main_state.chain_work = chain_work;
+        main_state.deposit_pubkey_hash = [0; 32];
+        main_state.deposit_pubkey_hash[..20].copy_from_slice(&deposit_pubkey_hash);
 
         main_state.fork_counter = 0;
 
@@ -67,6 +80,43 @@ pub mod btc_relay {
             commit_hash: hash_result,
             header: commited_header
         });
+
+        Ok(())
+    }
+
+    pub fn init_wbtc_meta(ctx: Context<InitWbtcMeta>) -> Result<()> {
+        // Initialize token metadata for wbtc_mint
+
+        let wbtc_data = DataV2 {
+            name: "Wrapped Bitcoin".to_string(),
+            symbol: "wBTC".to_string(),
+            uri: "https://yona-static.fra1.cdn.digitaloceanspaces.com/bitcoin.json".to_string(),
+            seller_fee_basis_points: 0,
+            creators: None,
+            collection: None,
+            uses: None,
+        };
+
+        let seeds = [STATE_SEED, &[ctx.bumps.main_state]];
+        let signer_seeds = &[&seeds[..]];
+
+        let main_state_info = ctx.accounts.main_state.to_account_info();
+
+        let metadata_ctx = CpiContext::new_with_signer(
+            ctx.accounts.token_metadata_program.to_account_info(),
+            CreateMetadataAccountsV3 {
+                payer: ctx.accounts.signer.to_account_info(),
+                update_authority: main_state_info.clone(),
+                mint: ctx.accounts.wbtc_mint.to_account_info(),
+                metadata: ctx.accounts.wbtc_metadata.to_account_info(),
+                mint_authority: main_state_info,
+                system_program: ctx.accounts.system_program.to_account_info(),
+                rent: ctx.accounts.rent.to_account_info(),
+            },
+            signer_seeds,
+        );
+
+        create_metadata_accounts_v3(metadata_ctx, wbtc_data, true, true, None)?;
 
         Ok(())
     }
@@ -378,12 +428,21 @@ pub mod btc_relay {
     // before the instructions that depend on transaction verification
     pub fn verify_small_tx(
         ctx: Context<VerifyTransaction>,
+        tx_id: [u8; 32],
         tx_bytes: Vec<u8>,
         confirmations: u32,
         tx_index: u32,
         reversed_merkle_proof: Vec<[u8; 32]>,
         commited_header: CommittedBlockHeader,
     ) -> Result<()> {
+        require!(
+            matches!(
+                ctx.accounts.tx_account.state,
+                TxState::VerificationInitialized
+            ),
+            RelayErrorCode::DepositTxAlreadyVerified
+        );
+
         let block_height = commited_header.blockheight;
 
         let main_state = ctx.accounts.main_state.load()?;
@@ -399,31 +458,59 @@ pub mod btc_relay {
             RelayErrorCode::PrevBlockCommitment
         );
 
-        let bitcoin_tx = Transaction::consensus_decode(&mut tx_bytes.as_slice()).unwrap();
-        let amount_to_transfer =
-            bridge_mint_amount(&bitcoin_tx, ctx.accounts.mint_receiver.key().to_bytes());
+        let bitcoin_tx = Transaction::consensus_decode(&mut tx_bytes.as_slice())
+            .map_err(|_| RelayErrorCode::TxDecodeFailure)?;
 
-        require!(amount_to_transfer > 0, RelayErrorCode::NoDepositOutputs);
+        let deposit_pubkey_hash = main_state.deposit_pubkey_hash[..20]
+            .try_into()
+            .expect("20 bytes");
 
-        let computed_merkle = utils::compute_merkle(
-            bitcoin_tx.compute_txid().as_ref(),
-            tx_index,
-            reversed_merkle_proof,
+        let amount_to_mint = bridge_mint_amount(
+            &bitcoin_tx,
+            ctx.accounts.wbtc_receiver_sol.key().to_bytes(),
+            deposit_pubkey_hash,
         );
+
+        require!(amount_to_mint > 0, RelayErrorCode::NoDepositOutputs);
+
+        let computed_tx_id = bitcoin_tx.compute_txid();
+        require!(
+            tx_id == computed_tx_id.to_byte_array(),
+            RelayErrorCode::UnexpectedTxId
+        );
+
+        let computed_merkle = utils::compute_merkle(&tx_id, tx_index, reversed_merkle_proof);
 
         require!(
             computed_merkle == commited_header.header.merkle_root,
             RelayErrorCode::MerkleRoot
         );
 
-        let sol_amount = amount_to_transfer * 10;
+        let seeds = [STATE_SEED, &[ctx.bumps.main_state]];
+        let signer_seeds = &[&seeds[..]];
 
-        **ctx
-            .accounts
-            .deposit_account
-            .as_ref()
-            .try_borrow_mut_lamports()? -= sol_amount;
-        **ctx.accounts.mint_receiver.try_borrow_mut_lamports()? += sol_amount;
+        mint_to(
+            CpiContext::new_with_signer(
+                ctx.accounts.token_program.to_account_info(),
+                MintTo {
+                    mint: ctx.accounts.wbtc_mint.to_account_info(),
+                    to: ctx.accounts.wbtc_receiver.to_account_info(),
+                    authority: ctx.accounts.main_state.to_account_info(),
+                },
+                signer_seeds,
+            ),
+            amount_to_mint,
+        )?;
+
+        emit!(DepositTxVerified {
+            tx_id,
+            wbtc_receiver_sol: *ctx.accounts.wbtc_receiver_sol.key,
+            wbtc_receiver: ctx.accounts.wbtc_receiver.key(),
+            deposit_pubkey_hash,
+        });
+
+        ctx.accounts.tx_account.state = TxState::VerificationComplete;
+
         Ok(())
     }
 
@@ -451,24 +538,6 @@ pub mod btc_relay {
             },
             RelayErrorCode::InvalidBlockheight
         );
-
-        Ok(())
-    }
-
-    pub fn deposit(ctx: Context<Deposit>, amount: u64) -> Result<()> {
-        // Transfer SOL from the user to the program's account
-        let ix = anchor_lang::solana_program::system_instruction::transfer(
-            &ctx.accounts.signer.key,
-            &ctx.accounts.deposit_account.as_ref().key,
-            amount,
-        );
-        anchor_lang::solana_program::program::invoke(
-            &ix,
-            &[
-                ctx.accounts.signer.to_account_info(),
-                ctx.accounts.deposit_account.to_account_info(),
-            ],
-        )?;
 
         Ok(())
     }
@@ -504,6 +573,9 @@ pub mod btc_relay {
             RelayErrorCode::MerkleRoot
         );
 
+        ctx.accounts.tx_account.state = TxState::VerificationInitialized;
+        ctx.accounts.tx_account.tx_bytes = Vec::with_capacity(tx_size as usize);
+
         Ok(())
     }
 
@@ -517,25 +589,91 @@ pub mod btc_relay {
     }
 
     pub fn finalize_tx_processing(ctx: Context<FinalizeTx>, tx_id: [u8; 32]) -> Result<()> {
+        require!(
+            matches!(
+                ctx.accounts.tx_account.state,
+                TxState::VerificationInitialized
+            ),
+            RelayErrorCode::DepositTxAlreadyVerified
+        );
+
         let bitcoin_tx =
             Transaction::consensus_decode(&mut ctx.accounts.tx_account.tx_bytes.as_slice())
-                .unwrap();
+                .map_err(|_| RelayErrorCode::TxDecodeFailure)?;
 
-        assert_eq!(tx_id, bitcoin_tx.compute_txid().as_ref());
-        let amount_to_transfer =
-            bridge_mint_amount(&bitcoin_tx, ctx.accounts.mint_receiver.key().to_bytes());
+        require!(
+            tx_id == bitcoin_tx.compute_txid().as_ref(),
+            RelayErrorCode::UnexpectedTxId
+        );
 
-        require!(amount_to_transfer > 0, RelayErrorCode::NoDepositOutputs);
+        let deposit_pubkey_hash = ctx.accounts.main_state.load()?.deposit_pubkey_hash[..20]
+            .try_into()
+            .expect("20 bytes");
 
-        let sol_amount = amount_to_transfer * 10;
+        let amount_to_mint = bridge_mint_amount(
+            &bitcoin_tx,
+            ctx.accounts.wbtc_receiver_sol.key().to_bytes(),
+            deposit_pubkey_hash,
+        );
 
-        **ctx
-            .accounts
-            .deposit_account
-            .as_ref()
-            .try_borrow_mut_lamports()? -= sol_amount;
+        require!(amount_to_mint > 0, RelayErrorCode::NoDepositOutputs);
 
-        **ctx.accounts.mint_receiver.try_borrow_mut_lamports()? += sol_amount;
+        let seeds = [STATE_SEED, &[ctx.bumps.main_state]];
+        let signer_seeds = &[&seeds[..]];
+
+        mint_to(
+            CpiContext::new_with_signer(
+                ctx.accounts.token_program.to_account_info(),
+                MintTo {
+                    mint: ctx.accounts.wbtc_mint.to_account_info(),
+                    to: ctx.accounts.wbtc_receiver.to_account_info(),
+                    authority: ctx.accounts.main_state.to_account_info(),
+                },
+                signer_seeds,
+            ),
+            amount_to_mint,
+        )?;
+
+        ctx.accounts.tx_account.state = TxState::VerificationComplete;
+
+        emit!(DepositTxVerified {
+            tx_id,
+            wbtc_receiver_sol: *ctx.accounts.wbtc_receiver_sol.key,
+            wbtc_receiver: ctx.accounts.wbtc_receiver.key(),
+            deposit_pubkey_hash,
+        });
+
+        Ok(())
+    }
+
+    pub fn bridge_withdraw(
+        ctx: Context<BridgeWithdraw>,
+        amount: u64,
+        bitcoin_address: String,
+    ) -> Result<()> {
+        // check that valid bitcoin address is provided
+        Address::from_str(&bitcoin_address)
+            .map_err(|_| error!(RelayErrorCode::InvalidBitcoinAddress))?
+            .require_network(Network::Regtest)
+            .map_err(|_| error!(RelayErrorCode::InvalidBitcoinAddress))?;
+
+        burn(
+            CpiContext::new(
+                ctx.accounts.token_program.to_account_info(),
+                Burn {
+                    mint: ctx.accounts.wbtc_mint.to_account_info(),
+                    from: ctx.accounts.wbtc_account.to_account_info(),
+                    authority: ctx.accounts.signer.to_account_info(),
+                },
+            ),
+            amount,
+        )?;
+
+        emit!(Withdrawal {
+            amount,
+            bitcoin_address
+        });
+
         Ok(())
     }
 }

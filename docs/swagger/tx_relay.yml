@@ -22,14 +22,14 @@ paths:
         '200':
           description: Successful response
           content:
-            text/plain:
+            application/json:
               schema:
                 type: string
-              example: bcrt1qxc7mtegdy73gj2le8af08u3ms7cfsr47ewlajf8tldaq98jjzn7s0jvveq
+              example: bcrt1qgqgrfslwh5rmkvsv4uu680lm0fy7yyh5vzll0s7zsnz0npum4g4qfj5anq
         '400':
           description: Bad request (e.g., invalid Yona address)
           content:
-            text/plain:
+            application/json:
               schema:
                 type: string
               example: yona_address is not valid
@@ -54,7 +54,7 @@ paths:
                 - tx_id
                 - yona_address
             example:
-              tx_id: "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
+              tx_id: "c37b2ec12c63fc5eaa5b12220b816c5fc9305383339668b5ec3bbc3434208253"
               yona_address: "CgxQmREYVuwyPzHcH19iBQDtPjcHEWuzfRgWrtzepHLs"
       responses:
         '200':
@@ -63,7 +63,7 @@ paths:
             application/json:
               schema:
                 type: string
-              example: 2LjpAwdh5r7vQ6eDwWAJ5rjoMXkxV921XKXkMdPXNjmCB3T3FcJcNFbJCG7FVxeR399H6vDTgMHjqdYHMcEJ12by
+              example: 2idEa74e7nTxRWpYT5YwGEMn1iUSYAo59EFt13zCJNz9VHVoJsXKkEN3nEx1dN8Z8E8Bqpg2TMp964TdrXFk5C7D
         '400':
           description: Bad request (e.g., invalid transaction ID or Yona address)
           content:
@@ -71,3 +71,155 @@ paths:
               schema:
                 type: string
               example: tx_id is not valid
+  /get_tx_state:
+    get:
+      summary: Get transaction state
+      description: Retrieve the state of a transaction based on the provided `tx_id`.
+      parameters:
+        - in: query
+          name: tx_id
+          required: true
+          schema:
+            type: string
+          description: The transaction ID
+          example: c37b2ec12c63fc5eaa5b12220b816c5fc9305383339668b5ec3bbc3434208253
+      responses:
+        '200':
+          description: Successful response with the state of the transaction (Relayed or NotRelayed).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tx_id:
+                    type: string
+                    description: Provided transaction ID
+                  status:
+                    type: string
+                    description: The status of the transaction. Relayed or NotRelayed.
+                required:
+                  - tx_id
+                  - yona_address
+              example:
+                tx_id: "c37b2ec12c63fc5eaa5b12220b816c5fc9305383339668b5ec3bbc3434208253"
+                status: "Relayed"
+        '400':
+          description: Invalid transaction ID.
+          content:
+            application/json:
+              schema:
+                type: string
+                example: "tx_id is not valid"
+        '500':
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                type: string
+                example: "Failed to get deposit tx state"
+  /get_tx_states:
+    get:
+      summary: Get multiple transactions state
+      description: Retrieve the state of a transactions based on the provided `tx_id`'s.
+      parameters:
+        - in: query
+          name: tx_ids
+          required: true
+          schema:
+            type: array
+            items:
+              type: string
+          description: The transaction IDs
+          example: [ c37b2ec12c63fc5eaa5b12220b816c5fc9305383339668b5ec3bbc3434208253, c37b2ec12c63fc5eaa5b12220b816c5fc9305383339668b5ec3bbc3434208252 ]
+      responses:
+        '200':
+          description: Successful response with the state of the transaction (Relayed or NotRelayed).
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    tx_id:
+                      type: string
+                      description: Provided transaction ID
+                    status:
+                      type: string
+                      description: The status of the transaction. Relayed or NotRelayed.
+                  required:
+                    - tx_id
+                    - yona_address
+                example: [
+                  {
+                    tx_id: "c37b2ec12c63fc5eaa5b12220b816c5fc9305383339668b5ec3bbc3434208253",
+                    status: "Relayed"
+                  },
+                  {
+                    tx_id: "c37b2ec12c63fc5eaa5b12220b816c5fc9305383339668b5ec3bbc3434208252",
+                    status: "NotRelayed"
+                  }
+                ]
+
+        '400':
+          description: Invalid transaction ID.
+          content:
+            application/json:
+              schema:
+                type: string
+                example: "tx_id is not valid"
+        '500':
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                type: string
+                example: "Failed to get deposit tx state"
+  /get_withdraw_info:
+    get:
+      summary: Get withdraw transaction information
+      description: Retrieve the Bitcoin transaction ID for a withdraw transaction based on the provided Solana transaction signature.
+      parameters:
+        - in: query
+          name: signature
+          required: true
+          schema:
+            type: string
+          description: The Solana transaction signature
+          example: 2xicPuNdTS2DMNnQuBd5xocXzbcVAGrMJtixUAmxjgsnhbmL4LZH4QryzbqYVkuBsNyqYNoqJATBmjrNpsihSj5v
+      responses:
+        '200':
+          description: Successful response with the Bitcoin transaction ID.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  bitcoin_tx_id:
+                    type: string
+                    description: The Bitcoin transaction ID
+                required:
+                  - bitcoin_tx_id
+              example:
+                bitcoin_tx_id: "da59ffaa6137e9f8913585f6e8f8ad3b7aaa02d4c1c5a0209efa171489910687"
+        '400':
+          description: Invalid Solana transaction signature.
+          content:
+            application/json:
+              schema:
+                type: string
+                example: "signature is not valid"
+        '404':
+          description: Withdraw transaction not found.
+          content:
+            application/json:
+              schema:
+                type: string
+                example: "Withdraw transaction not found"
+        '500':
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                type: string
+                example: "Failed to get withdraw transaction info"

@@ -1,21 +1,31 @@
 use crate::merkle::Proof;
 use anchor_client::anchor_lang::prelude::{AccountDeserialize, AccountMeta};
+use anchor_client::solana_sdk::compute_budget::ComputeBudgetInstruction;
 use anchor_client::solana_sdk::pubkey::Pubkey;
 use anchor_client::solana_sdk::signature::{Keypair, Signature};
 use anchor_client::ClientError as AnchorClientError;
 use anchor_client::Program;
+use anchor_spl::associated_token::get_associated_token_address;
 use bitcoin::hashes::Hash;
 use bitcoin::hex::DisplayHex;
 use bitcoin::{Block, BlockHash, Txid};
 use bitcoincore_rpc::{Client as BitcoinRpcClient, Error as BtcRpcError, RpcApi};
-use btc_relay::accounts::{Deposit, Initialize, SubmitBlockHeaders, VerifyTransaction};
+use btc_relay::accounts::{
+    BridgeWithdraw, FinalizeTx, InitBigTxVerify, InitWbtcMeta, Initialize, StoreTxBytes,
+    SubmitBlockHeaders, VerifyTransaction,
+};
+use btc_relay::config::WBTC_MINT_SEED;
 use btc_relay::instruction::{
-    Deposit as DepositInstruction, Initialize as InitializeInstruction,
+    BridgeWithdraw as BridgeWithdrawInstruction, FinalizeTxProcessing,
+    InitBigTxVerify as InitBigTxVerifyInstruction, InitWbtcMeta as InitWbtcMetaIx,
+    Initialize as InitializeInstruction, StoreTxBytes as StoreTxBytesInstruction,
     SubmitBlockHeaders as SubmitBlockHeadersInstruction, VerifySmallTx as VerifySmallTxInstruction,
 };
-use btc_relay::state::MainState;
+use btc_relay::state::{DepositTxState as ProgramDepositTxState, MainState, TxState};
 use btc_relay::structs::{BlockHeader, CommittedBlockHeader};
 use log::{debug, info};
+use serde::Serialize;
+use std::fmt;
 use std::sync::Arc;
 
 pub(crate) fn reconstruct_commited_header(
@@ -50,28 +60,30 @@ pub(crate) fn reconstruct_commited_header(
     })
 }
 
-pub(crate) fn init_deposit(
-    program: &Program<Arc<Keypair>>,
-    amount: u64,
-) -> Result<Signature, AnchorClientError> {
-    let (deposit_account, _) = Pubkey::find_program_address(&[b"solana_deposit"], &program.id());
-
-    program
-        .request()
-        .accounts(Deposit {
-            signer: program.payer(),
-            deposit_account,
-            system_program: anchor_client::solana_sdk::system_program::ID,
-        })
-        .args(DepositInstruction { amount })
-        .send()
+pub enum InitError {
+    Anchor(AnchorClientError),
+    Bitcoin(BtcRpcError),
 }
 
-pub fn init_program(
+impl From<AnchorClientError> for InitError {
+    fn from(error: AnchorClientError) -> Self {
+        InitError::Anchor(error)
+    }
+}
+
+impl From<BtcRpcError> for InitError {
+    fn from(error: BtcRpcError) -> Self {
+        InitError::Bitcoin(error)
+    }
+}
+
+pub async fn init_program(
     program: &Program<Arc<Keypair>>,
+    bitcoind_client: &BitcoinRpcClient,
     block: Block,
     block_height: u32,
-) -> Result<Signature, AnchorClientError> {
+    deposit_pubkey_hash: [u8; 20],
+) -> Result<Signature, InitError> {
     let (main_state, _) = Pubkey::find_program_address(&[b"state"], &program.id());
 
     let yona_block_header = BlockHeader {
@@ -83,37 +95,82 @@ pub fn init_program(
         nonce: block.header.nonce,
     };
 
-    let block_hash = yona_block_header.get_block_hash()?;
+    let block_hash = yona_block_header
+        .get_block_hash()
+        .map_err(AnchorClientError::from)?;
+
+    let mut prev_block_timestamps = [0; 10];
+    for i in 0..10 {
+        let prev_block_hash = tokio::task::block_in_place(|| {
+            bitcoind_client.get_block_hash(block_height as u64 - i as u64 - 1)
+        })?;
+        let block = tokio::task::block_in_place(|| bitcoind_client.get_block(&prev_block_hash))?;
+        prev_block_timestamps[9 - i] = block.header.time;
+    }
 
     let (header_topic, _) =
         Pubkey::find_program_address(&[b"header", block_hash.as_slice()], &program.id());
+
+    let (wbtc_mint, _) = Pubkey::find_program_address(&[WBTC_MINT_SEED], &program.id());
+
+    let (wbtc_metadata, _) = Pubkey::find_program_address(
+        &[
+            b"metadata".as_slice(),
+            anchor_spl::metadata::ID.as_ref(),
+            wbtc_mint.as_ref(),
+        ],
+        &anchor_spl::metadata::ID,
+    );
 
     let res = program
         .request()
         .accounts(Initialize {
             signer: program.payer(),
             main_state,
+            wbtc_mint,
             header_topic,
             system_program: anchor_client::solana_sdk::system_program::ID,
+            token_program: anchor_spl::token::ID,
+            rent: anchor_client::solana_sdk::rent::sysvar::ID,
         })
         .args(InitializeInstruction {
             data: yona_block_header,
             block_height,
             chain_work: [0; 32],
             last_diff_adjustment: yona_block_header.timestamp,
-            prev_block_timestamps: [yona_block_header.timestamp; 10],
+            prev_block_timestamps,
+            deposit_pubkey_hash,
         })
-        .send()?;
+        .send()
+        .await?;
 
     info!(
         "Submitted block {}, tx sig {res}",
         block_hash.to_lower_hex_string()
     );
 
+    let meta_res = program
+        .request()
+        .accounts(InitWbtcMeta {
+            signer: program.payer(),
+            main_state,
+            wbtc_mint,
+            wbtc_metadata,
+            token_metadata_program: anchor_spl::metadata::ID,
+            system_program: anchor_client::solana_sdk::system_program::ID,
+            token_program: anchor_spl::token::ID,
+            rent: anchor_client::solana_sdk::rent::sysvar::ID,
+        })
+        .args(InitWbtcMetaIx {})
+        .send()
+        .await?;
+
+    info!("Initialized wBTC metadata, tx sig {meta_res}");
+
     Ok(res)
 }
 
-pub(crate) fn submit_block(
+pub(crate) async fn submit_block(
     program: &Program<Arc<Keypair>>,
     main_state: Pubkey,
     block: Block,
@@ -146,7 +203,8 @@ pub(crate) fn submit_block(
             data: vec![yona_block_header],
             commited_header,
         })
-        .send()?;
+        .send()
+        .await?;
 
     block_hash.reverse();
     info!(
@@ -158,7 +216,7 @@ pub(crate) fn submit_block(
 }
 
 #[derive(Debug)]
-pub(crate) enum RelayTxError {
+pub enum RelayTxError {
     Anchor(AnchorClientError),
     BitcoinRpc(BtcRpcError),
     TxIsNotIncludedToBlock,
@@ -177,61 +235,199 @@ impl From<BtcRpcError> for RelayTxError {
     }
 }
 
-pub(crate) fn relay_tx(
+pub async fn relay_tx(
     program: &Program<Arc<Keypair>>,
     main_state: Pubkey,
-    bitcoind_client: &BitcoinRpcClient,
+    bitcoind_client: Arc<BitcoinRpcClient>,
     tx_id: Txid,
-    mint_receiver: Pubkey,
+    wbtc_receiver_sol: Pubkey,
 ) -> Result<Signature, RelayTxError> {
+    let (wbtc_mint, _) = Pubkey::find_program_address(&[WBTC_MINT_SEED], &program.id());
+    let wbtc_receiver = get_associated_token_address(&wbtc_receiver_sol, &wbtc_mint);
+
     let raw_account = program
         .rpc()
         .get_account(&main_state)
+        .await
         .map_err(AnchorClientError::from)?;
-    let main_state_data = MainState::try_deserialize_unchecked(&mut &raw_account.data[..8128])
+    let main_state_data = MainState::try_deserialize(&mut &raw_account.data[..8160])
         .map_err(AnchorClientError::from)?;
 
-    let transaction = bitcoind_client.get_raw_transaction_info(&tx_id, None)?;
+    let client_clone = bitcoind_client.clone();
+    let transaction =
+        tokio::task::spawn_blocking(move || client_clone.get_raw_transaction_info(&tx_id, None))
+            .await
+            .expect("no panic")?;
 
     let block_hash = match transaction.blockhash {
         Some(hash) => hash,
         _ => return Err(RelayTxError::TxIsNotIncludedToBlock),
     };
 
-    let block_info = bitcoind_client.get_block_info(&block_hash)?;
+    let client_clone = bitcoind_client.clone();
+    let block_info = tokio::task::spawn_blocking(move || client_clone.get_block_info(&block_hash))
+        .await
+        .expect("no panic")?;
 
-    let commited_header = reconstruct_commited_header(
-        &bitcoind_client,
-        &block_hash,
-        block_info.height as u32,
-        main_state_data.last_diff_adjustment,
-    )?;
+    let client_clone = bitcoind_client.clone();
+    let commited_header = tokio::task::spawn_blocking(move || {
+        reconstruct_commited_header(
+            &client_clone,
+            &block_hash,
+            block_info.height as u32,
+            main_state_data.last_diff_adjustment,
+        )
+    })
+    .await
+    .expect("no panic")?;
 
     let tx_pos = block_info
         .tx
         .iter()
         .position(|in_block| *in_block == tx_id)
         .ok_or(RelayTxError::CouldNotFindTxidInBlock)?;
-    let proof = Proof::create(&block_info.tx, tx_pos);
+    let reversed_merkle_proof = Proof::create(&block_info.tx, tx_pos).to_reversed_vec();
 
-    let (deposit_account, _) = Pubkey::find_program_address(&[b"solana_deposit"], &program.id());
+    let tx_id = transaction.txid.to_byte_array();
+    let (tx_account, _) = Pubkey::find_program_address(&[tx_id.as_slice()], &program.id());
+
+    if transaction.hex.len() + 32 * reversed_merkle_proof.len() > 800 {
+        program
+            .request()
+            .accounts(InitBigTxVerify {
+                signer: program.payer(),
+                tx_account,
+                system_program: anchor_client::solana_sdk::system_program::ID,
+                main_state,
+            })
+            .args(InitBigTxVerifyInstruction {
+                tx_id,
+                confirmations: 1,
+                tx_index: tx_pos as u32,
+                commited_header,
+                reversed_merkle_proof,
+                tx_size: transaction.hex.len() as u64,
+            })
+            .send()
+            .await?;
+
+        for chunk in transaction.hex.chunks(800) {
+            program
+                .request()
+                .accounts(StoreTxBytes {
+                    signer: program.payer(),
+                    tx_account,
+                })
+                .args(StoreTxBytesInstruction {
+                    tx_id,
+                    bytes: chunk.to_vec(),
+                })
+                .send()
+                .await?;
+        }
+
+        let res = program
+            .request()
+            .instruction(ComputeBudgetInstruction::set_compute_unit_limit(500_000))
+            .accounts(FinalizeTx {
+                signer: program.payer(),
+                tx_account,
+                wbtc_receiver_sol,
+                wbtc_mint,
+                wbtc_receiver,
+                associated_token_program: anchor_spl::associated_token::ID,
+                main_state,
+                token_program: anchor_spl::token::ID,
+                system_program: anchor_client::solana_sdk::system_program::ID,
+            })
+            .args(FinalizeTxProcessing { tx_id })
+            .send()
+            .await?;
+
+        Ok(res)
+    } else {
+        let res = program
+            .request()
+            .accounts(VerifyTransaction {
+                signer: program.payer(),
+                main_state,
+                tx_account,
+                wbtc_receiver_sol,
+                wbtc_mint,
+                wbtc_receiver,
+                associated_token_program: anchor_spl::associated_token::ID,
+                token_program: anchor_spl::token::ID,
+                system_program: anchor_client::solana_sdk::system_program::ID,
+            })
+            .args(VerifySmallTxInstruction {
+                tx_id,
+                tx_bytes: transaction.hex,
+                confirmations: 1,
+                tx_index: tx_pos as u32,
+                commited_header,
+                reversed_merkle_proof,
+            })
+            .send()
+            .await?;
+
+        Ok(res)
+    }
+}
+
+pub async fn bridge_withdraw(
+    program: &Program<Arc<Keypair>>,
+    amount: u64,
+    bitcoin_address: String,
+) -> Result<Signature, AnchorClientError> {
+    let (wbtc_mint, _) = Pubkey::find_program_address(&[WBTC_MINT_SEED], &program.id());
+    let wbtc_account = get_associated_token_address(&program.payer(), &wbtc_mint);
 
     let res = program
         .request()
-        .accounts(VerifyTransaction {
+        .accounts(BridgeWithdraw {
             signer: program.payer(),
-            main_state,
-            deposit_account,
-            mint_receiver,
+            wbtc_mint,
+            wbtc_account,
+            token_program: anchor_spl::token::ID,
         })
-        .args(VerifySmallTxInstruction {
-            tx_bytes: transaction.hex,
-            confirmations: 1,
-            tx_index: tx_pos as u32,
-            commited_header,
-            reversed_merkle_proof: proof.to_reversed_vec(),
+        .args(BridgeWithdrawInstruction {
+            amount,
+            bitcoin_address,
         })
-        .send()?;
+        .send()
+        .await?;
 
     Ok(res)
+}
+
+#[derive(Serialize)]
+pub enum DepositTxState {
+    NotRelayed,
+    Relayed,
+}
+
+impl fmt::Display for DepositTxState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            DepositTxState::NotRelayed => write!(f, "NotRelayed"),
+            DepositTxState::Relayed => write!(f, "Relayed"),
+        }
+    }
+}
+
+pub async fn deposit_tx_state(
+    program: &Program<Arc<Keypair>>,
+    tx_id: Txid,
+) -> Result<DepositTxState, AnchorClientError> {
+    let (tx_account, _) =
+        Pubkey::find_program_address(&[tx_id.to_byte_array().as_slice()], &program.id());
+
+    match program.account::<ProgramDepositTxState>(tx_account).await {
+        Ok(state) => match state.state {
+            TxState::VerificationInitialized => Ok(DepositTxState::NotRelayed),
+            TxState::VerificationComplete => Ok(DepositTxState::Relayed),
+        },
+        Err(AnchorClientError::AccountNotFound) => Ok(DepositTxState::NotRelayed),
+        Err(e) => Err(e),
+    }
 }
