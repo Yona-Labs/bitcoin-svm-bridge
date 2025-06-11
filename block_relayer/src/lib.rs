@@ -585,7 +585,8 @@ pub async fn process_bridge_events(
                         collected_amount += utxo.amount;
                         inputs_utxos.push(utxo);
 
-                        if collected_amount >= event.amount {
+                        // ensure that resulting change is more than dust
+                        if collected_amount >= event.amount + 546 {
                             break;
                         }
                     }

@@ -22,7 +22,7 @@ use once_cell::sync::Lazy;
 use std::env;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 use testcontainers::core::wait::LogWaitStrategy;
@@ -212,11 +212,13 @@ fn relay_transaction() {
 
     let deposit_address = Address::p2wsh(output_script.as_script(), Network::Regtest);
 
-    let bitcoin_client = BitcoinRpcClient::new(
-        &TEST_CTX.relay_config.bitcoind_url,
-        TEST_CTX.relay_config.bitcoin_auth.clone().into(),
-    )
-    .expect("init bitcoin_client");
+    let bitcoin_client = Arc::new(
+        BitcoinRpcClient::new(
+            &TEST_CTX.relay_config.bitcoind_url,
+            TEST_CTX.relay_config.bitcoin_auth.clone().into(),
+        )
+        .expect("init bitcoin_client"),
+    );
 
     // this is small tx
     let deposit_tx_id = bitcoin_client
@@ -247,7 +249,7 @@ fn relay_transaction() {
         .block_on(relay_tx(
             &program,
             main_state,
-            &bitcoin_client,
+            bitcoin_client.clone(),
             deposit_tx_id,
             program.payer().key(),
         ))
@@ -291,7 +293,7 @@ fn relay_transaction() {
         .block_on(relay_tx(
             &program,
             main_state,
-            &bitcoin_client,
+            bitcoin_client.clone(),
             big_deposit_tx_id,
             program.payer().key(),
         ))
