@@ -140,11 +140,22 @@ static TEST_CTX: Lazy<TestCtx> = Lazy::new(|| {
 
     let pool = TEST_RUNTIME.block_on(init_test_pool());
 
+    let runtime = Runtime::new().expect("Tokio runtime to be created");
+
     thread::spawn({
         let relay_config = relay_config.clone();
         let bridge_privkey = bridge_privkey.clone();
         let secp256k1 = secp256k1.clone();
-        move || process_bridge_events(relay_config, pool, bridge_privkey, pubkey, secp256k1)
+        move || {
+            process_bridge_events(
+                relay_config,
+                pool,
+                bridge_privkey,
+                pubkey,
+                secp256k1,
+                runtime,
+            )
+        }
     });
 
     TestCtx {

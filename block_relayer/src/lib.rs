@@ -460,10 +460,17 @@ pub fn process_bridge_events(
             commitment: Some(CommitmentConfig::confirmed()),
         };
 
-        let transactions_history = program
+        let transactions_history = match program
             .rpc()
             .get_signatures_for_address_with_config(&btc_relay::id(), config)
-            .expect("get_signatures_for_address");
+        {
+            Ok(history) => history,
+            Err(e) => {
+                log::error!("Error getting signatures for address: {}", e);
+                thread::sleep(Duration::from_secs(1));
+                continue;
+            }
+        };
 
         for transaction in transactions_history {
             if runtime
