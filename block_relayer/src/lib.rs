@@ -558,7 +558,7 @@ pub fn process_bridge_events(
                             .unwrap();
 
                         let tx_out = TxOut {
-                            value: Amount::from_sat(event.amount),
+                            value: Amount::from_sat(event.amount - 1000),
                             script_pubkey: address.script_pubkey(),
                         };
 
@@ -581,12 +581,12 @@ pub fn process_bridge_events(
                             collected_amount += utxo.amount;
                             inputs_utxos.push(utxo);
 
-                            if collected_amount >= event.amount + 1000 {
+                            if collected_amount >= event.amount {
                                 break;
                             }
                         }
 
-                        let change = collected_amount - event.amount - 1000;
+                        let change = collected_amount - event.amount;
 
                         let bridge_script_pubkey = Address::p2wpkh(
                             &bridge_pubkey

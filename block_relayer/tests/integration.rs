@@ -330,7 +330,8 @@ fn relay_transaction() {
 
     let balance_after = get_address_balance(bitcoin_address);
     let balance_diff = balance_after - balance_before;
-    let expected_diff = Amount::from_int_btc(11).to_sat();
+    // minus tx fee
+    let expected_diff = Amount::from_int_btc(11).to_sat() - 2000;
 
     assert_eq!(expected_diff, balance_diff);
 }
