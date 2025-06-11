@@ -71,15 +71,15 @@ fn main() {
                 let config = config.clone();
                 relay_blocks_from_full_node(config, 30)
             });
-
-            runtime.spawn({
-                let config = config.clone();
-                relay_transactions(config, pubkey_hash.to_byte_array())
-            });
-
             let sqlite_pool = runtime
                 .block_on(SqlitePool::connect("sqlite:./bridge.db?mode=rwc"))
                 .unwrap();
+
+            runtime.spawn({
+                let config = config.clone();
+                let pool = sqlite_pool.clone();
+                relay_transactions(config, pubkey_hash.to_byte_array(), pool)
+            });
 
             runtime
                 .block_on(sqlx::migrate!("./migrations").run(&sqlite_pool))

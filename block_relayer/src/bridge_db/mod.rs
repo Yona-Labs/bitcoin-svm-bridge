@@ -6,6 +6,8 @@ mod solana_transaction;
 pub use solana_transaction::*;
 mod utxo;
 pub use utxo::Utxo;
+mod withdraw_transaction_info;
+pub use withdraw_transaction_info::WithdrawTransactionInfo;
 
 pub async fn init_test_pool() -> SqlitePool {
     let connect_options = SqliteConnectOptions::from_str("sqlite::memory:?cache=shared")
@@ -29,10 +31,13 @@ pub async fn init_test_pool() -> SqlitePool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use anchor_client::solana_sdk::signature::Signature;
+    use bitcoin::Txid;
+    use std::str::FromStr;
 
     #[tokio::test]
     async fn test_bridge_database() {
-        env_logger::init();
+        let _ = env_logger::try_init();
 
         let pool = init_test_pool().await;
 
@@ -63,5 +68,34 @@ mod tests {
         // Test delete
         Utxo::delete_utxo(&pool, &[0; 32], 0).await.unwrap();
         assert!(Utxo::get_utxo(&pool, &[0; 32], 0).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_withdraw_transaction_info() {
+        let _ = env_logger::try_init();
+
+        let pool = init_test_pool().await;
+
+        // Create test data
+        let solana_signature = Signature::new_unique();
+
+        // Create a Bitcoin TxId
+        let txid_hex = "0000000000000000000000000000000000000000000000000000000000000001";
+        let bitcoin_txid = Txid::from_str(txid_hex).unwrap();
+
+        // Test add_new
+        WithdrawTransactionInfo::add_new(&pool, &solana_signature, &bitcoin_txid)
+            .await
+            .unwrap();
+
+        // Test get_by_solana_signature
+        let retrieved_info =
+            WithdrawTransactionInfo::get_by_solana_signature(&pool, &solana_signature)
+                .await
+                .unwrap()
+                .unwrap();
+
+        assert_eq!(retrieved_info.solana_tx_signature, solana_signature);
+        assert_eq!(retrieved_info.bitcoin_tx_id, bitcoin_txid);
     }
 }

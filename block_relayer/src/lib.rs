@@ -5,6 +5,7 @@ pub mod relay_program_interaction;
 
 use crate::bridge_db::{
     insert_solana_transaction, set_transaction_processed, solana_transaction_processed,
+    WithdrawTransactionInfo,
 };
 use crate::config::RelayConfig;
 use crate::relay_program_interaction::*;
@@ -268,6 +269,7 @@ impl From<AnchorClientError> for DepositError {
 struct RelayTransactionsState {
     relay_program: Program<Arc<Keypair>>,
     bitcoin_rpc_client: Arc<BitcoinRpcClient>,
+    sqlite_pool: SqlitePool,
     deposit_pubkey_hash: [u8; 20],
     main_state: Pubkey,
 }
@@ -398,7 +400,11 @@ async fn get_deposit_address(
     HttpResponse::Ok().json(deposit_address.to_string())
 }
 
-pub async fn relay_transactions(config: RelayConfig, deposit_pubkey_hash: [u8; 20]) {
+pub async fn relay_transactions(
+    config: RelayConfig,
+    deposit_pubkey_hash: [u8; 20],
+    sqlite_pool: SqlitePool,
+) {
     let yona_client = get_yona_client(&config).expect("Couldn't create Yona client");
 
     let bitcoin_rpc_client =
@@ -416,6 +422,7 @@ pub async fn relay_transactions(config: RelayConfig, deposit_pubkey_hash: [u8; 2
         bitcoin_rpc_client: Arc::new(bitcoin_rpc_client),
         main_state,
         deposit_pubkey_hash,
+        sqlite_pool,
     });
 
     // Start HTTP server
@@ -661,6 +668,9 @@ pub async fn process_bridge_events(
                     }) {
                         Ok(id) => {
                             info!("Processed bridge withdrawal, Bitcoin tx id {}", id);
+                            WithdrawTransactionInfo::add_new(&pool, &signature, &id)
+                                .await
+                                .expect("WithdrawTransactionInfo::add_new success");
                             for input in tx.input.iter() {
                                 Utxo::delete_utxo(
                                     &pool,
