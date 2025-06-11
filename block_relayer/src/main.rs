@@ -10,8 +10,9 @@ use bitcoin::{Network, PrivateKey};
 use block_relayer_lib::config::read_config;
 use block_relayer_lib::relay_program_interaction::bridge_withdraw;
 use block_relayer_lib::{
-    process_bridge_events, relay_blocks_from_full_node, relay_transactions, run_init_program,
+    process_bridge_events, relay_blocks_from_full_node, run_init_program,
 };
+use block_relayer_lib::relay_transactions::relay_transactions;
 use clap::{Parser, Subcommand};
 use sqlx::SqlitePool;
 use std::str::FromStr;
