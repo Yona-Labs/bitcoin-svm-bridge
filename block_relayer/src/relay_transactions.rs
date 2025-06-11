@@ -8,7 +8,7 @@ use actix_cors::Cors;
 use actix_web::{web, App, HttpResponse, HttpServer, Responder};
 use anchor_client::anchor_lang::{AccountDeserialize, AnchorDeserialize, Discriminator, Id};
 use anchor_client::solana_sdk::pubkey::Pubkey;
-use anchor_client::solana_sdk::signature::Keypair;
+use anchor_client::solana_sdk::signature::{Keypair, Signature};
 use anchor_client::{Client as AnchorClient, Program};
 use bitcoin::{Address, Network, Script, Txid};
 use bitcoincore_rpc::Client as BitcoinRpcClient;
@@ -141,6 +141,39 @@ struct GetDepositAddrReq {
     yona_address: String,
 }
 
+#[derive(Deserialize)]
+struct GetWithdrawInfoReq {
+    signature: String,
+}
+
+#[derive(Serialize)]
+struct WithdrawInfoResponse {
+    bitcoin_tx_id: String,
+}
+
+async fn get_withdraw_info_web_api(
+    data: web::Data<RelayTransactionsState>,
+    req: web::Query<GetWithdrawInfoReq>,
+) -> impl Responder {
+    let signature = match Signature::from_str(&req.signature) {
+        Ok(sig) => sig,
+        Err(_) => return HttpResponse::BadRequest().json("signature is not valid"),
+    };
+
+    let withdraw_info_res = WithdrawTransactionInfo::get_by_solana_signature(&data.sqlite_pool, &signature).await;
+
+    match withdraw_info_res {
+        Ok(Some(withdraw_info)) => HttpResponse::Ok().json(WithdrawInfoResponse {
+            bitcoin_tx_id: withdraw_info.bitcoin_tx_id.to_string(),
+        }),
+        Ok(None) => HttpResponse::NotFound().json("Withdraw transaction not found"),
+        Err(e) => {
+            error!("{e:?}");
+            HttpResponse::InternalServerError().json("Failed to get withdraw transaction info")
+        }
+    }
+}
+
 async fn get_deposit_address(
     data: web::Data<RelayTransactionsState>,
     req: web::Query<GetDepositAddrReq>,
@@ -191,6 +224,7 @@ pub async fn relay_transactions(
             .route("/get_deposit_address", web::get().to(get_deposit_address))
             .route("/get_tx_state", web::get().to(get_tx_state_web_api))
             .route("/get_tx_states", web::get().to(get_tx_states_web_api))
+            .route("/get_withdraw_info", web::get().to(get_withdraw_info_web_api))
     })
     .bind("0.0.0.0:8199")
     .expect("Couldn't bind to 0.0.0.0:8199")

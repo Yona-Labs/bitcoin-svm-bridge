@@ -175,3 +175,51 @@ paths:
               schema:
                 type: string
                 example: "Failed to get deposit tx state"
+  /get_withdraw_info:
+    get:
+      summary: Get withdraw transaction information
+      description: Retrieve the Bitcoin transaction ID for a withdraw transaction based on the provided Solana transaction signature.
+      parameters:
+        - in: query
+          name: signature
+          required: true
+          schema:
+            type: string
+          description: The Solana transaction signature
+          example: 2idEa74e7nTxRWpYT5YwGEMn1iUSYAo59EFt13zCJNz9VHVoJsXKkEN3nEx1dN8Z8E8Bqpg2TMp964TdrXFk5C7D
+      responses:
+        '200':
+          description: Successful response with the Bitcoin transaction ID.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  bitcoin_tx_id:
+                    type: string
+                    description: The Bitcoin transaction ID
+                required:
+                  - bitcoin_tx_id
+              example:
+                bitcoin_tx_id: "c37b2ec12c63fc5eaa5b12220b816c5fc9305383339668b5ec3bbc3434208253"
+        '400':
+          description: Invalid Solana transaction signature.
+          content:
+            application/json:
+              schema:
+                type: string
+                example: "signature is not valid"
+        '404':
+          description: Withdraw transaction not found.
+          content:
+            application/json:
+              schema:
+                type: string
+                example: "Withdraw transaction not found"
+        '500':
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                type: string
+                example: "Failed to get withdraw transaction info"
