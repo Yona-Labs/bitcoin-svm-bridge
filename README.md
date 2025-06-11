@@ -20,11 +20,7 @@ flowchart TD
     BTC["Bitcoin Blockchain"]
     
     UI["Bridge UI"]
-    subgraph Nodes["Bridge Nodes using FROST"]
-        Node1["Node 1"]
-        Node2["Node 2"]
-        Node3["Node 3"]
-        More["..."]
+    subgraph Nodes["Bridge Node"]
     end
     BR["Block Relayer"]
     TR["Transaction Relayer"]
@@ -39,7 +35,7 @@ flowchart TD
     TR -->|Relay deposit transactions| YRP
     UI -->|Send burn transactions| YRP
     UI -->|Notify about deposit transactions| TR
-    Nodes -->|Cooperatively sign and broadcast withdrawal transactions| BTC
+    Nodes -->|Sign and broadcast withdrawal transactions| BTC
     Nodes <-->|Monitor mint and burn transactions| YRP
 ```
 
@@ -47,11 +43,11 @@ flowchart TD
 
 1. Install Rust and Docker.
 2. Install Solana CLI: https://docs.solanalabs.com/cli/install
-3. Install Anchor: https://www.anchor-lang.com/docs/installation and select version `0.30.1`:
+3. Install Anchor: https://www.anchor-lang.com/docs/installation and select version `0.31.1`:
 
 ```bash
-avm install 0.30.1
-avm use 0.30.1
+avm install 0.31.1
+avm use 0.31.1
 ```
 
 4. Generate a new keypair: `solana-keygen new --no-bip39-passphrase -s -o anchor.json`.
