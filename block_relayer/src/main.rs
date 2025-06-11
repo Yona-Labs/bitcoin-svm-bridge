@@ -72,6 +72,11 @@ fn main() {
                 relay_blocks_from_full_node(config, 30)
             });
 
+            runtime.spawn({
+                let config = config.clone();
+                relay_transactions(config, pubkey_hash.to_byte_array())
+            });
+
             let sqlite_pool = runtime
                 .block_on(SqlitePool::connect("sqlite:./bridge.db?mode=rwc"))
                 .unwrap();
