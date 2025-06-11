@@ -186,7 +186,7 @@ paths:
           schema:
             type: string
           description: The Solana transaction signature
-          example: 2idEa74e7nTxRWpYT5YwGEMn1iUSYAo59EFt13zCJNz9VHVoJsXKkEN3nEx1dN8Z8E8Bqpg2TMp964TdrXFk5C7D
+          example: 2xicPuNdTS2DMNnQuBd5xocXzbcVAGrMJtixUAmxjgsnhbmL4LZH4QryzbqYVkuBsNyqYNoqJATBmjrNpsihSj5v
       responses:
         '200':
           description: Successful response with the Bitcoin transaction ID.
@@ -201,7 +201,7 @@ paths:
                 required:
                   - bitcoin_tx_id
               example:
-                bitcoin_tx_id: "c37b2ec12c63fc5eaa5b12220b816c5fc9305383339668b5ec3bbc3434208253"
+                bitcoin_tx_id: "da59ffaa6137e9f8913585f6e8f8ad3b7aaa02d4c1c5a0209efa171489910687"
         '400':
           description: Invalid Solana transaction signature.
           content:
