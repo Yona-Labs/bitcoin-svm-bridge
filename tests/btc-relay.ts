@@ -1,6 +1,7 @@
 import * as anchor from "@coral-xyz/anchor";
 import {Program} from "@coral-xyz/anchor";
 import {BtcRelay} from "../target/types/btc_relay";
+import {getAssociatedTokenAddressSync, TOKEN_PROGRAM_ID} from "@solana/spl-token";
 import {createHash} from "crypto";
 
 import * as chai from 'chai';
@@ -457,19 +458,19 @@ describe("btc-relay", () => {
     });
 
     it("Bridge withdraw", async () => {
-        const withdrawAmount = 10 * LAMPORTS_PER_SOL;
+        const seeds = [Buffer.from("wbtc_mint")];
+        const [wbtcMint] = anchor.web3.PublicKey.findProgramAddressSync(seeds, program.programId);
+        const userWbtcAccount = getAssociatedTokenAddressSync(wbtcMint, provider.wallet.publicKey);
+        const userWbtcBalance = await provider.connection.getBalance(userWbtcAccount);
+
+        const withdrawAmount = 10 * 10 ** 8;
+
         const bitcoinAddress = "bcrt1qm3zxtz0evpc0r5ch3az2ulx0cxce9yjkcs73cq";
-
-        const context = {
-            signer: program.provider.publicKey,
-            depositAccount,
-            systemProgram: SystemProgram.programId
-        };
-
-        const depositBalanceBefore = await provider.connection.getBalance(depositAccount);
-        await program.methods.bridgeWithdraw(new anchor.BN(withdrawAmount), bitcoinAddress).accounts(context).rpc();
-
-        const depositBalanceAfter = await provider.connection.getBalance(depositAccount);
-        chai.expect(depositBalanceAfter).eq(depositBalanceBefore + withdrawAmount);
+        await program.methods.bridgeWithdraw(new anchor.BN(withdrawAmount), bitcoinAddress).accounts({
+            signer: provider.wallet.publicKey,
+            wbtcMint,
+            wbtcAccount: userWbtcAccount,
+            tokenProgram: TOKEN_PROGRAM_ID,
+        }).rpc();
     });
 });

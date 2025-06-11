@@ -265,6 +265,5 @@ pub struct BridgeWithdraw<'info> {
         associated_token::authority = signer,
     )]
     pub wbtc_account: Account<'info, TokenAccount>,
-    pub system_program: Program<'info, System>,
     pub token_program: Program<'info, Token>,
 }

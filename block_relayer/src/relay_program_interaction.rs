@@ -387,7 +387,6 @@ pub async fn bridge_withdraw(
         .accounts(BridgeWithdraw {
             signer: program.payer(),
             wbtc_mint,
-            system_program: anchor_client::solana_sdk::system_program::ID,
             wbtc_account,
             token_program: anchor_spl::token::ID,
         })
