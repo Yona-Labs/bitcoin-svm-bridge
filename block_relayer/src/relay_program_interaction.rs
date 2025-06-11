@@ -101,8 +101,10 @@ pub async fn init_program(
 
     let mut prev_block_timestamps = [0; 10];
     for i in 0..10 {
-        let prev_block_hash = bitcoind_client.get_block_hash(block_height as u64 - i as u64 - 1)?;
-        let block = bitcoind_client.get_block(&prev_block_hash)?;
+        let prev_block_hash = tokio::task::block_in_place(|| {
+            bitcoind_client.get_block_hash(block_height as u64 - i as u64 - 1)
+        })?;
+        let block = tokio::task::block_in_place(|| bitcoind_client.get_block(&prev_block_hash))?;
         prev_block_timestamps[9 - i] = block.header.time;
     }
 
@@ -251,21 +253,24 @@ pub async fn relay_tx(
     let main_state_data = MainState::try_deserialize(&mut &raw_account.data[..8160])
         .map_err(AnchorClientError::from)?;
 
-    let transaction = bitcoind_client.get_raw_transaction_info(&tx_id, None)?;
+    let transaction =
+        tokio::task::block_in_place(|| bitcoind_client.get_raw_transaction_info(&tx_id, None))?;
 
     let block_hash = match transaction.blockhash {
         Some(hash) => hash,
         _ => return Err(RelayTxError::TxIsNotIncludedToBlock),
     };
 
-    let block_info = bitcoind_client.get_block_info(&block_hash)?;
+    let block_info = tokio::task::block_in_place(|| bitcoind_client.get_block_info(&block_hash))?;
 
-    let commited_header = reconstruct_commited_header(
-        &bitcoind_client,
-        &block_hash,
-        block_info.height as u32,
-        main_state_data.last_diff_adjustment,
-    )?;
+    let commited_header = tokio::task::block_in_place(|| {
+        reconstruct_commited_header(
+            &bitcoind_client,
+            &block_hash,
+            block_info.height as u32,
+            main_state_data.last_diff_adjustment,
+        )
+    })?;
 
     let tx_pos = block_info
         .tx
