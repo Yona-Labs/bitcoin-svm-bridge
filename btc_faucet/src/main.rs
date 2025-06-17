@@ -1,94 +1,106 @@
 use actix_cors::Cors;
 use actix_web::middleware::Logger;
 use actix_web::{guard, web, App, HttpResponse, HttpServer, Responder};
-use bitcoincore_rpc::bitcoin::address::{Address, ParseError};
-use bitcoincore_rpc::bitcoin::{Amount, Network, Txid};
-use bitcoincore_rpc::{Auth, Client, RpcApi};
 use derive_more::Display;
 use once_cell::sync::Lazy;
 use serde::Deserialize;
-use std::str::FromStr;
-use tokio::task::spawn_blocking;
+use serde::Serialize;
 
 static AUTH_TOKEN: Lazy<String> =
     Lazy::new(|| std::env::var("AUTH_TOKEN").expect("AUTH_TOKEN env to be set"));
 
-struct AppState {
-    rpc_client: Client,
-}
+const BITCOIN_RPC_URL: &str = "http://127.0.0.1:18443";
+const BITCOIN_RPC_USER: &str = "test";
+const BITCOIN_RPC_PASS: &str = "test";
 
 #[derive(Deserialize)]
 struct FaucetRequest {
     address: String,
 }
 
-async fn request_funds(
-    data: web::Data<AppState>,
-    req: web::Query<FaucetRequest>,
-) -> impl Responder {
+async fn request_funds(req: web::Query<FaucetRequest>) -> impl Responder {
     let address = req.address.clone();
 
     // Send funds via Bitcoin RPC
-    match spawn_blocking(move || send_funds(&data.rpc_client, &address))
-        .await
-        .expect("no panic")
-    {
+    match send_funds(&address).await {
         Ok(txid) => HttpResponse::Ok().body(format!("Funds sent. Transaction ID: {}", txid)),
         Err(e) => HttpResponse::InternalServerError().body(format!("Failed to send funds: {}", e)),
     }
 }
 
-#[derive(Display)]
+async fn send_funds(address: &str) -> Result<String, SendFundsError> {
+    const FAUCET_AMOUNT: f64 = 5.0;
+
+    let client = reqwest::Client::new();
+    let body = JsonRpcRequest {
+        jsonrpc: "1.0",
+        id: "faucet",
+        method: "sendtoaddress",
+        params: vec![
+            serde_json::Value::String(address.to_string()),
+            serde_json::Value::from(FAUCET_AMOUNT),
+        ],
+    };
+
+    let resp = client
+        .post(BITCOIN_RPC_URL)
+        .basic_auth(BITCOIN_RPC_USER, Some(BITCOIN_RPC_PASS))
+        .json(&body)
+        .send()
+        .await?
+        .json::<JsonRpcResponse<String>>()
+        .await?;
+
+    match (resp.result, resp.error) {
+        (Some(txid), None) => Ok(txid),
+        (_, Some(err)) => Err(SendFundsError::Rpc(err.message)),
+        _ => Err(SendFundsError::Rpc("Unknown error".into())),
+    }
+}
+
+#[derive(Serialize)]
+struct JsonRpcRequest<'a> {
+    jsonrpc: &'static str,
+    id: &'static str,
+    method: &'a str,
+    params: Vec<serde_json::Value>,
+}
+
+#[derive(Deserialize)]
+struct JsonRpcResponse<T> {
+    result: Option<T>,
+    error: Option<RpcError>,
+}
+
+#[derive(Deserialize, Debug)]
+struct RpcError {
+    code: i64,
+    message: String,
+}
+
+#[derive(Display, Debug)]
 enum SendFundsError {
-    Parse(ParseError),
-    Rpc(bitcoincore_rpc::Error),
+    #[display(fmt = "Request failed: {}", _0)]
+    Reqwest(reqwest::Error),
+    #[display(fmt = "RPC error: {}", _0)]
+    Rpc(String),
 }
 
-impl From<ParseError> for SendFundsError {
-    fn from(e: ParseError) -> Self {
-        SendFundsError::Parse(e)
+impl From<reqwest::Error> for SendFundsError {
+    fn from(e: reqwest::Error) -> Self {
+        SendFundsError::Reqwest(e)
     }
-}
-
-impl From<bitcoincore_rpc::Error> for SendFundsError {
-    fn from(e: bitcoincore_rpc::Error) -> Self {
-        SendFundsError::Rpc(e)
-    }
-}
-
-fn send_funds(rpc_client: &Client, address: &str) -> Result<Txid, SendFundsError> {
-    const FAUCET_AMOUNT: u64 = 5 * 100_000_000; // Amount in BTC
-    let address = Address::from_str(address)?;
-
-    Ok(rpc_client.send_to_address(
-        &address.require_network(Network::Regtest)?,
-        Amount::from_sat(FAUCET_AMOUNT),
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-    )?)
 }
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     env_logger::init();
 
-    let rpc_url = "http://127.0.0.1:18443";
-    let rpc_auth = Auth::UserPass("test".into(), "test".into());
-    let rpc_client = Client::new(rpc_url, rpc_auth).expect("Failed to create RPC client");
-
-    // Initialize app state
-    let app_state = web::Data::new(AppState { rpc_client });
-
     // Start HTTP server
     HttpServer::new(move || {
         App::new()
             .wrap(Cors::permissive())
             .wrap(Logger::default())
-            .app_data(app_state.clone())
             .route(
                 "/faucet",
                 web::get()
