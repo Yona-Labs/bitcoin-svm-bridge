@@ -1,4 +1,5 @@
 use actix_cors::Cors;
+use actix_web::middleware::Logger;
 use actix_web::{guard, web, App, HttpResponse, HttpServer, Responder};
 use bitcoincore_rpc::bitcoin::address::{Address, ParseError};
 use bitcoincore_rpc::bitcoin::{Amount, Network, Txid};
@@ -7,6 +8,7 @@ use derive_more::Display;
 use once_cell::sync::Lazy;
 use serde::Deserialize;
 use std::str::FromStr;
+use tokio::task::spawn_blocking;
 
 static AUTH_TOKEN: Lazy<String> =
     Lazy::new(|| std::env::var("AUTH_TOKEN").expect("AUTH_TOKEN env to be set"));
@@ -24,10 +26,13 @@ async fn request_funds(
     data: web::Data<AppState>,
     req: web::Query<FaucetRequest>,
 ) -> impl Responder {
-    let address = &req.address;
+    let address = req.address.clone();
 
     // Send funds via Bitcoin RPC
-    match send_funds(&data.rpc_client, address) {
+    match spawn_blocking(move || send_funds(&data.rpc_client, &address))
+        .await
+        .expect("no panic")
+    {
         Ok(txid) => HttpResponse::Ok().body(format!("Funds sent. Transaction ID: {}", txid)),
         Err(e) => HttpResponse::InternalServerError().body(format!("Failed to send funds: {}", e)),
     }
@@ -82,6 +87,7 @@ async fn main() -> std::io::Result<()> {
     HttpServer::new(move || {
         App::new()
             .wrap(Cors::permissive())
+            .wrap(Logger::default())
             .app_data(app_state.clone())
             .route(
                 "/faucet",
