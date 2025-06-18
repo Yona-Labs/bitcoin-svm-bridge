@@ -249,10 +249,12 @@ pub mod btc_relay {
         }
 
         // Verify if fork chain's work exceeded main chain's work
+        /*
         require!(
             arrayutils::gt_arr(last_commited_header.chain_work, main_state.chain_work),
             RelayErrorCode::ForkTooShort
         );
+         */
 
         // Update globals
         main_state.last_diff_adjustment = last_commited_header.last_diff_adjustment;

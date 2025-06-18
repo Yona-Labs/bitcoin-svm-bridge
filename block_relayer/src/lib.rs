@@ -11,6 +11,7 @@ use crate::bridge_db::{
 use crate::config::RelayConfig;
 use crate::relay_program_interaction::*;
 use actix_cors::Cors;
+use actix_web::web::block;
 use actix_web::{web, App, HttpResponse, HttpServer, Responder};
 use anchor_client::anchor_lang::{AccountDeserialize, AnchorDeserialize, Discriminator, Id};
 use anchor_client::solana_client::rpc_client::GetConfirmedSignaturesForAddress2Config;
@@ -18,7 +19,9 @@ use anchor_client::solana_client::rpc_config::RpcTransactionConfig;
 use anchor_client::solana_sdk::commitment_config::CommitmentConfig;
 use anchor_client::solana_sdk::pubkey::Pubkey;
 use anchor_client::solana_sdk::signature::{read_keypair_file, Keypair, Signature};
-use anchor_client::{Client as AnchorClient, ClientError as AnchorClientError, Cluster, Program};
+use anchor_client::{
+    solana_client, Client as AnchorClient, ClientError as AnchorClientError, Cluster, Program,
+};
 use base64::Engine;
 use bitcoin::absolute::LockTime;
 use bitcoin::hashes::Hash;
@@ -200,29 +203,43 @@ pub async fn relay_blocks_from_full_node(config: RelayConfig, wait_for_new_block
 }
 
 #[derive(Debug)]
-pub enum InitProgramError {
-    Anchor(AnchorClientError),
+pub enum BlockRelayerError {
+    AnchorClient(AnchorClientError),
+    AnchorLang(anchor_client::anchor_lang::error::Error),
+    SolanaClient(solana_client::client_error::ClientError),
     Bitcoin(BtcError),
     CouldNotInitYonaClient(Box<dyn error::Error>),
 }
 
-impl From<AnchorClientError> for InitProgramError {
+impl From<AnchorClientError> for BlockRelayerError {
     fn from(error: AnchorClientError) -> Self {
-        InitProgramError::Anchor(error)
+        BlockRelayerError::AnchorClient(error)
     }
 }
 
-impl From<BtcError> for InitProgramError {
+impl From<anchor_client::anchor_lang::error::Error> for BlockRelayerError {
+    fn from(error: anchor_client::anchor_lang::error::Error) -> Self {
+        BlockRelayerError::AnchorLang(error)
+    }
+}
+
+impl From<solana_client::client_error::ClientError> for BlockRelayerError {
+    fn from(error: solana_client::client_error::ClientError) -> Self {
+        BlockRelayerError::SolanaClient(error)
+    }
+}
+
+impl From<BtcError> for BlockRelayerError {
     fn from(error: BtcError) -> Self {
-        InitProgramError::Bitcoin(error)
+        BlockRelayerError::Bitcoin(error)
     }
 }
 
-impl From<InitError> for InitProgramError {
+impl From<InitError> for BlockRelayerError {
     fn from(err: InitError) -> Self {
         match err {
-            InitError::Anchor(e) => InitProgramError::Anchor(e),
-            InitError::Bitcoin(e) => InitProgramError::Bitcoin(e),
+            InitError::Anchor(e) => BlockRelayerError::AnchorClient(e),
+            InitError::Bitcoin(e) => BlockRelayerError::Bitcoin(e),
         }
     }
 }
@@ -231,8 +248,9 @@ impl From<InitError> for InitProgramError {
 pub async fn run_init_program(
     config: RelayConfig,
     deposit_pubkey_hash: [u8; 20],
-) -> Result<Signature, InitProgramError> {
-    let yona_client = get_yona_client(&config).map_err(InitProgramError::CouldNotInitYonaClient)?;
+) -> Result<Signature, BlockRelayerError> {
+    let yona_client =
+        get_yona_client(&config).map_err(BlockRelayerError::CouldNotInitYonaClient)?;
 
     let bitcoind_client = BitcoinRpcClient::new(&config.bitcoind_url, config.bitcoin_auth.into())?;
 
@@ -255,6 +273,50 @@ pub async fn run_init_program(
     .await?)
 }
 
+pub async fn run_submit_block_fork(
+    config: RelayConfig,
+    block_number: u64,
+) -> Result<Signature, BlockRelayerError> {
+    let yona_client =
+        get_yona_client(&config).map_err(BlockRelayerError::CouldNotInitYonaClient)?;
+
+    let relay_program = BtcRelay::id();
+    let program = yona_client.program(relay_program)?;
+
+    let (main_state, _) = Pubkey::find_program_address(&[b"state"], &relay_program);
+
+    let raw_account = program.rpc().get_account(&main_state).await?;
+
+    // TODO there seems to be an allocation of 8 unneeded bytes, which makes deserialization fail
+    let main_state_data = MainState::try_deserialize_unchecked(&mut &raw_account.data[..8160])?;
+
+    let bitcoind_client = BitcoinRpcClient::new(&config.bitcoind_url, config.bitcoin_auth.into())?;
+
+    let relay_program = BtcRelay::id();
+    let program = yona_client.program(relay_program)?;
+
+    let block_hash = tokio::task::block_in_place(|| bitcoind_client.get_block_hash(block_number))?;
+    let block = tokio::task::block_in_place(|| bitcoind_client.get_block(&block_hash))?;
+
+    let prev_commited_header = tokio::task::block_in_place(|| {
+        reconstruct_commited_header(
+            &bitcoind_client,
+            &block.header.prev_blockhash,
+            block_number as u32 - 1,
+            main_state_data.last_diff_adjustment,
+        )
+    })?;
+
+    Ok(submit_block_fork(
+        &program,
+        main_state,
+        block,
+        block_number as u32,
+        prev_commited_header,
+    )
+    .await?)
+}
+
 #[derive(Debug)]
 pub enum DepositError {
     Anchor(AnchorClientError),
@@ -266,7 +328,6 @@ impl From<AnchorClientError> for DepositError {
         DepositError::Anchor(error)
     }
 }
-
 
 pub async fn process_bridge_events(
     config: RelayConfig,

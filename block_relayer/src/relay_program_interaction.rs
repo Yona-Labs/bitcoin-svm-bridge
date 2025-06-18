@@ -12,14 +12,15 @@ use bitcoin::{Block, BlockHash, Txid};
 use bitcoincore_rpc::{Client as BitcoinRpcClient, Error as BtcRpcError, RpcApi};
 use btc_relay::accounts::{
     BridgeWithdraw, FinalizeTx, InitBigTxVerify, InitWbtcMeta, Initialize, StoreTxBytes,
-    SubmitBlockHeaders, VerifyTransaction,
+    SubmitBlockHeaders, SubmitShortForkHeaders, VerifyTransaction,
 };
 use btc_relay::config::WBTC_MINT_SEED;
 use btc_relay::instruction::{
     BridgeWithdraw as BridgeWithdrawInstruction, FinalizeTxProcessing,
     InitBigTxVerify as InitBigTxVerifyInstruction, InitWbtcMeta as InitWbtcMetaIx,
     Initialize as InitializeInstruction, StoreTxBytes as StoreTxBytesInstruction,
-    SubmitBlockHeaders as SubmitBlockHeadersInstruction, VerifySmallTx as VerifySmallTxInstruction,
+    SubmitBlockHeaders as SubmitBlockHeadersInstruction,
+    SubmitShortForkHeaders as SubmitShortForkHeadersIx, VerifySmallTx as VerifySmallTxInstruction,
 };
 use btc_relay::state::{DepositTxState as ProgramDepositTxState, MainState, TxState};
 use btc_relay::structs::{BlockHeader, CommittedBlockHeader};
@@ -209,6 +210,51 @@ pub(crate) async fn submit_block(
     block_hash.reverse();
     info!(
         "Submitted block header. Hash {}, height {height}, Yona tx {res}",
+        block_hash.to_lower_hex_string()
+    );
+
+    Ok(res)
+}
+
+pub(crate) async fn submit_block_fork(
+    program: &Program<Arc<Keypair>>,
+    main_state: Pubkey,
+    block: Block,
+    height: u32,
+    commited_header: CommittedBlockHeader,
+) -> Result<Signature, AnchorClientError> {
+    let yona_block_header = BlockHeader {
+        version: block.header.version.to_consensus() as u32,
+        reversed_prev_blockhash: block.header.prev_blockhash.to_byte_array(),
+        merkle_root: block.header.merkle_root.to_byte_array(),
+        timestamp: block.header.time,
+        nbits: block.header.bits.to_consensus(),
+        nonce: block.header.nonce,
+    };
+
+    let mut block_hash = yona_block_header.get_block_hash()?;
+    let (header_topic, _) =
+        Pubkey::find_program_address(&[b"header", block_hash.as_slice()], &program.id());
+
+    let header_account = AccountMeta::new(header_topic, false);
+
+    let res = program
+        .request()
+        .accounts(SubmitShortForkHeaders {
+            signer: program.payer(),
+            main_state,
+        })
+        .accounts(vec![header_account])
+        .args(SubmitShortForkHeadersIx {
+            data: vec![yona_block_header],
+            commited_header,
+        })
+        .send()
+        .await?;
+
+    block_hash.reverse();
+    info!(
+        "Submitted block header fork. Hash {}, height {height}, Yona tx {res}",
         block_hash.to_lower_hex_string()
     );
 

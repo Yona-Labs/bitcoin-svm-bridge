@@ -9,10 +9,10 @@ use bitcoin::secp256k1::SecretKey;
 use bitcoin::{Network, PrivateKey};
 use block_relayer_lib::config::read_config;
 use block_relayer_lib::relay_program_interaction::bridge_withdraw;
-use block_relayer_lib::{
-    process_bridge_events, relay_blocks_from_full_node, run_init_program,
-};
 use block_relayer_lib::relay_transactions::relay_transactions;
+use block_relayer_lib::{
+    process_bridge_events, relay_blocks_from_full_node, run_init_program, run_submit_block_fork,
+};
 use clap::{Parser, Subcommand};
 use sqlx::SqlitePool;
 use std::str::FromStr;
@@ -26,6 +26,9 @@ enum RelayerCommand {
     },
     Relay {
         bridge_privkey: String,
+    },
+    SubmitBlockFork {
+        block_number: u64,
     },
     GenerateKey,
     BridgeWithdraw {
@@ -120,6 +123,12 @@ fn main() {
                 .block_on(bridge_withdraw(&program, amount, bitcoin_address))
                 .expect("Successful withdrawal");
             println!("Withdraw result {result}");
+        }
+        RelayerCommand::SubmitBlockFork { block_number } => {
+            let result = runtime
+                .block_on(run_submit_block_fork(config, block_number))
+                .expect("run_submit_block_fork failed");
+            println!("Submit block fork result {result}");
         }
     }
 }
