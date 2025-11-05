@@ -109,7 +109,6 @@ pub async fn relay_blocks_from_full_node(config: RelayConfig, wait_for_new_block
                 &bitcoind_client,
                 &BlockHash::from_byte_array(block_hash),
                 main_state_data.block_height,
-                main_state_data.last_diff_adjustment,
             )
         }) {
             Ok(header) => header,
@@ -303,7 +302,6 @@ pub async fn run_submit_block_fork(
             &bitcoind_client,
             &block.header.prev_blockhash,
             block_number as u32 - 1,
-            main_state_data.last_diff_adjustment,
         )
     })?;
 
