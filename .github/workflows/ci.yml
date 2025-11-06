@@ -1,18 +1,22 @@
 on:
   push:
     branches: [ ci ]
+  workflow_dispatch:
+    inputs:
+      run_step:
+        description: 'Do you need to run make a builder image?'
+        required: true
+        default: 'no'
 
 env:
   CARGO_TERM_COLOR: always
   REGISTRY: registry.digitalocean.com/mov3r-container
 
 jobs:
-  build:
+
+  make_builder_image:
     runs-on: ubuntu-latest
-    strategy:
-      max-parallel: 2
-      matrix:
-        env: [ prod ]
+    if: ${{ github.event.inputs.run_step == 'yes' }}
     outputs:
       app-image: ${{ steps.build-app-block-relayer-image.outputs.IMAGE }}
       image-tag: ${{ steps.build-app-block-relayer-image.outputs.IMAGE_TAG }}
@@ -35,13 +39,29 @@ jobs:
           docker build \
             --cache-to=type=inline \
             --cache-from type=registry,ref=$IMAGE:latest \
-            -t $IMAGE:$IMAGE_TAG \
             -t $IMAGE:latest \
             --target builder \
             --push \
             .
           echo "IMAGE_TAG=$IMAGE_TAG" >> "$GITHUB_OUTPUT"
           echo "IMAGE=$IMAGE" >> "$GITHUB_OUTPUT"
+
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      app-image: ${{ steps.build-app-block-relayer-image.outputs.IMAGE }}
+      image-tag: ${{ steps.build-app-block-relayer-image.outputs.IMAGE_TAG }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install doctl
+        uses: digitalocean/action-doctl@v2
+        with:
+          token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+
+      - name: Log in to DigitalOcean Container Registry with short-lived credentials
+        run: doctl registry login --expiry-seconds 1200
 
       - name: Build/push block_relayer image
         id: build-app-block-relayer-image
