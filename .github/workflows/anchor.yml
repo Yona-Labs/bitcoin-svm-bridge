@@ -1,38 +1,46 @@
-name: Anchor
-
 on:
   push:
-    branches: [ main ]
-  pull_request:
-    branches: [ main ]
+    branches: [ ci ]
 
 env:
   CARGO_TERM_COLOR: always
+  IMAGE_REPOSITORY: registry.digitalocean.com/mov3r-container/$CI_PROJECT_NAME
 
 jobs:
-  anchor:
+  build:
     runs-on: ubuntu-latest
-    container: artempikulin/build:latest
-
+    strategy:
+      max-parallel: 2
+      matrix:
+        env: [ prod ]
+    outputs:
+      app-image: ${{ steps.build-app-image.outputs.IMAGE }}
+      image-tag: ${{ steps.build-app-image.outputs.IMAGE_TAG }}
     steps:
-      - uses: actions/checkout@v3
-      - name: Install GCC multilib
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install doctl
+        uses: digitalocean/action-doctl@v2
+        with:
+          token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+
+      - name: Log in to DigitalOcean Container Registry with short-lived credentials
+        run: doctl registry login --expiry-seconds 1200
+
+      - name: Build/push app image
+        id: build-app-image
         run: |
-          apt-get update
-          apt-get install gcc-multilib -y
-      - name: Set default toolchain
-        run: rustup default stable
-      - name: Generate new keypair
-        run: solana-keygen new --no-bip39-passphrase -s -o anchor.json
-      - name: Check solana config
-        run: solana config get
-      - name: Install yarn dependencies
-        run: yarn install
-      - name: Anchor Build
-        run: anchor build
-      - name: Anchor Test
-        run: anchor test
-      - name: Test Block Relayer
-        run: |
-          cd block_relayer
-          cargo test
+          export IMAGE=$IMAGE_REPOSITORY/${{ matrix.env }}/app
+          export IMAGE_TAG=$(echo $GITHUB_SHA | head -c7)
+
+          docker build \
+            --cache-from type=registry,ref=$IMAGE:cache \
+            --cache-to type=registry,ref=$IMAGE:cache,mode=max \
+            -t $IMAGE:$IMAGE_TAG \
+            -t $IMAGE:latest \
+            --target app \
+            --push \
+            .
+          echo "IMAGE_TAG=$IMAGE_TAG" >> "$GITHUB_OUTPUT"
+          echo "IMAGE=$IMAGE" >> "$GITHUB_OUTPUT"
