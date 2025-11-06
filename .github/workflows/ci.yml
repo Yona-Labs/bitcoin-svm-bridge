@@ -3,7 +3,7 @@ on:
     branches: [ ci ]
   workflow_dispatch:
     inputs:
-      run_step:
+      run_make_builder_image:
         description: 'Do you need to run make a builder image?'
         required: true
         default: 'no'
@@ -16,7 +16,7 @@ jobs:
 
   make_builder_image:
     runs-on: ubuntu-latest
-    if: ${{ github.event.inputs.run_step == 'yes' }}
+    if: ${{ inputs.run_make_builder_image == 'yes' }}
     outputs:
       app-image: ${{ steps.build-app-block-relayer-image.outputs.IMAGE }}
       image-tag: ${{ steps.build-app-block-relayer-image.outputs.IMAGE_TAG }}

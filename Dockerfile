@@ -48,8 +48,8 @@ WORKDIR /build
 
 COPY . .
 
-ENV PATH=$PATH:$NVM_DIR/versions/node/$NODE_VERSION/bin
-RUN yarn install
+#ENV PATH=$PATH:$NVM_DIR/versions/node/$NODE_VERSION/bin
+#RUN yarn install
 
 ENV PATH=$PATH:/root/.local/share/solana/install/active_release/bin
 #RUN anchor build
@@ -65,9 +65,10 @@ FROM rust:1.91-slim-trixie AS app_block_relayer
 
 WORKDIR /app
 
-ENV PATH=$PATH:/app/bin
+ENV PATH=$PATH:/app/bin \
+    SECRET_KEY=""
 
 COPY --from=builder /build/block_relayer/target/release/block_relayer ./bin/block_relayer
 #COPY --from=builder /workdir/programs/btc-relay /app/bin/btc_relay
 
-ENTRYPOINT [ "./bin/block_relayer" ]
+ENTRYPOINT [ "block_relayer", "relay", "$SECRET_KEY" ]
