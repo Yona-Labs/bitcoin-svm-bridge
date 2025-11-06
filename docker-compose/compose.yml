@@ -3,7 +3,7 @@ x-common-dns: &common-dns
   dns_opt: [ 'ndots:0' ]
 x-common-network: &common-network
   networks:
-    - common
+    - bitcoin-svm-bridge
 x-network-host: &network-host
  network_mode: host
 x-common-logging: &common-logging
@@ -18,8 +18,8 @@ services:
     <<: [ *common-network, *common-dns, *common-logging ]
     hostname: block-relayer
     image: ${BLOCK_RELAYER_IMAGE}
+    command: [ relay, ${BLOCK_RELAYER_SECRET_KEY} ]
     environment:
-      SECRET_KEY: ${BLOCK_RELAYER_SECRET_KEY}
       RUST_BACKTRACE: ${BLOCK_RELAYER_RUST_BACKTRACE}
       RUST_LOG: ${BLOCK_RELAYER_RUST_LOG}
     volumes:
@@ -27,6 +27,5 @@ services:
       - ./config/yona-keypair.json:/app/yona-keypair.json
 
 networks:
-  common:
-    name: "${LC_COMPOSE_NETWORK_ID:-bridge}"
+  bitcoin-svm-bridge:
     external: true

@@ -65,9 +65,7 @@ FROM rust:1.91-slim-trixie AS app_block_relayer
 
 WORKDIR /app
 
-ENV SECRET_KEY=""
-
-COPY --from=builder /build/block_relayer/target/release/block_relayer ./block_relayer
+COPY --from=builder /build/block_relayer/target/release/block_relayer /app/block_relayer
 #COPY --from=builder /workdir/programs/btc-relay /app/bin/btc_relay
 
-CMD [ "./block_relayer", "relay", "${SECRET_KEY}" ]
+ENTRYPOINT [ "/app/block_relayer" ]

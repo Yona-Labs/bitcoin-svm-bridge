@@ -124,7 +124,7 @@ jobs:
             set -e
             export COMPOSE_PROJECT_NAME="${GITHUB_REPOSITORY#*/}"
             echo "${{ secrets.REGISTRY_PERSONAL_ACCESS_TOKEN }}" | docker login -u \"${{ vars.REGISTRY_PERSONAL_ACCESS_TOKEN_NAME }}\" --password-stdin $REGISTRY
-            cd /opt/$COMPOSE_PROJECT_NAME/docker-compose
+            cd /opt/${GITHUB_REPOSITORY#*/}/docker-compose
             docker compose up -d
             sleep 5
             docker compose logs --tail 20
