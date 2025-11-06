@@ -10,6 +10,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  APP_NAME: block-relayer
   REGISTRY: registry.digitalocean.com/mov3r-container
 
 jobs:
@@ -112,4 +113,19 @@ jobs:
           remote_user: '${{ vars.DEPLOY_SSH_USER }}'
           remote_key: '${{ secrets.DEPLOY_SSH_KEY }}'
 
+      - name: Deploy with Docker Compose
+        uses: appleboy/ssh-action@v1.2.2
+        with:
+          host: '${{ vars.DEPLOY_SSH_HOST }}'
+          username: '${{ vars.DEPLOY_SSH_USER }}'
+          key: '${{ secrets.DEPLOY_SSH_KEY }}'
+          envs: APP_NAME,REGISTRY
+          script: |
+            set -e
+            echo "${{ secrets.REGISTRY_PERSONAL_ACCESS_TOKEN }}" | docker login -u \"${{ vars.REGISTRY_PERSONAL_ACCESS_TOKEN_NAME }}\" --password-stdin $REGISTRY
+            cd /opt/$APP_NAME/docker-compose
+            docker compose -p $APP_NAME up -d
+            sleep 5
+            docker compose -p $APP_NAME logs --tail 20
+            docker compose -p $APP_NAME ps -a --format 'table {{.Name}}\t{{.Image}}\t{{.Ports}}\t{{.Status}}\t{{lower .Networks}}'
 
