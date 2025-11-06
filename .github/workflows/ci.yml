@@ -4,7 +4,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  REGISTRY: registry.digitalocean.com/mov3r-container/${CI_PROJECT_NAME}
+  REGISTRY: registry.digitalocean.com/mov3r-container/${GITHUB_REPOSITORY#*/}
 
 jobs:
   build:
