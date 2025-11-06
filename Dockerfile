@@ -51,13 +51,14 @@ RUN yarn install
 
 ENV PATH=$PATH:/root/.local/share/solana/install/active_release/bin
 #RUN anchor build
+
 RUN cd block_relayer \
     && cargo build --release
 
 #RUN find / -name block_relayer -type f
 
 
-FROM rust AS app
+FROM rust:1.91-slim-trixie AS app_block_relayer
 
 WORKDIR /app
 
