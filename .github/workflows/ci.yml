@@ -1,0 +1,133 @@
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      run_make_builder_image:
+        description: 'Do you need to run make a builder image?'
+        required: true
+        default: 'no'
+
+env:
+  CARGO_TERM_COLOR: always
+  PROJECT_NAME: bitcoin-svm-bridge
+  REGISTRY: registry.digitalocean.com/mov3r-container
+
+jobs:
+
+  make_builder_image:
+    runs-on: ubuntu-latest
+    if: ${{ inputs.run_make_builder_image == 'yes' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install doctl
+        uses: digitalocean/action-doctl@v2
+        with:
+          token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+
+      - name: Log in to DigitalOcean Container Registry with short-lived credentials
+        run: doctl registry login --expiry-seconds 1200
+
+      - name: Build/push builder image
+        run: |
+          export IMAGE=$REGISTRY/${GITHUB_REPOSITORY#*/}/builder
+          export IMAGE_TAG=$(echo $GITHUB_SHA | head -c7)
+          docker build \
+            --cache-to=type=inline \
+            --cache-from type=registry,ref=$IMAGE:latest \
+            -t $IMAGE:latest \
+            --target builder \
+            --push \
+            .
+
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      app-block-relayer-image: ${{ steps.build-app-block-relayer.outputs.IMAGE }}
+      app-block-relayer-image-tag: ${{ steps.build-app-block-relayer.outputs.IMAGE_TAG }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install doctl
+        uses: digitalocean/action-doctl@v2
+        with:
+          token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+
+      - name: Log in to DigitalOcean Container Registry with short-lived credentials
+        run: doctl registry login --expiry-seconds 1200
+
+      - name: Build/push block_relayer image
+        id: build-app-block-relayer
+        run: |
+          export IMAGE=$REGISTRY/${GITHUB_REPOSITORY#*/}/block-relayer
+          export IMAGE_TAG=$(echo $GITHUB_SHA | head -c7)
+          docker build \
+            --cache-to=type=inline \
+            --cache-from type=registry,ref=$REGISTRY/${GITHUB_REPOSITORY#*/}/builder:latest \
+            --cache-from type=registry,ref=$IMAGE:latest \
+            -t $IMAGE:$IMAGE_TAG \
+            -t $IMAGE:latest \
+            --target app_block_relayer \
+            --push \
+            .
+          echo "IMAGE_TAG=$IMAGE_TAG" >> "$GITHUB_OUTPUT"
+          echo "IMAGE=$IMAGE" >> "$GITHUB_OUTPUT"
+
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Create config.toml file
+        run: |
+          mkdir -p ./docker-compose/config
+          echo '${{ secrets.CONFIG_TOML }}' > ./docker-compose/config/config.toml
+
+      - name: Create solana keypair file
+        run: |
+          echo -n '${{ secrets.YONA_SOLANA_KEYPAIR }}' > ./docker-compose/config/yona-keypair.json
+          chmod 0600 ./docker-compose/config/yona-keypair.json
+
+      - name: Create environment variables
+        run: |
+          cat > ./docker-compose/.env << EOF
+          BLOCK_RELAYER_IMAGE="${{ needs.build.outputs.app-block-relayer-image }}:${{ needs.build.outputs.app-block-relayer-image-tag }}"
+          BLOCK_RELAYER_SECRET_KEY="${{ secrets.BLOCK_RELAYER_SECRET_KEY }}"
+          BLOCK_RELAYER_RUST_BACKTRACE="1"
+          BLOCK_RELAYER_RUST_LOG="info"
+          EOF
+
+      - name: Sync docker compose files
+        uses: burnett01/rsync-deployments@7.1.0
+        with:
+          switches: -avz --delete -e 'ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'
+          path: ./docker-compose
+          remote_path: "/opt/${GITHUB_REPOSITORY#*/}"
+          remote_host: '${{ vars.DEPLOY_SSH_HOST }}'
+          remote_user: '${{ vars.DEPLOY_SSH_USER }}'
+          remote_key: '${{ secrets.DEPLOY_SSH_KEY }}'
+
+      - name: Deploy with Docker Compose
+        uses: appleboy/ssh-action@v1.2.2
+        env:
+          COMPOSE_PROJECT_NAME: bitcoin-svm-bridge
+        with:
+          host: '${{ vars.DEPLOY_SSH_HOST }}'
+          username: '${{ vars.DEPLOY_SSH_USER }}'
+          key: '${{ secrets.DEPLOY_SSH_KEY }}'
+          envs: REGISTRY,COMPOSE_PROJECT_NAME
+          script: |
+            set -e
+            echo "${{ secrets.REGISTRY_PERSONAL_ACCESS_TOKEN }}" | docker login -u \"${{ vars.REGISTRY_PERSONAL_ACCESS_TOKEN_NAME }}\" --password-stdin $REGISTRY
+            cd /opt/$COMPOSE_PROJECT_NAME/docker-compose
+            docker compose up -d
+            sleep 5
+            docker compose logs --tail 20
+            docker compose ps -a --format 'table {{.Name}}\t{{.Image}}\t{{.Ports}}\t{{.Status}}\t{{lower .Networks}}'
+
