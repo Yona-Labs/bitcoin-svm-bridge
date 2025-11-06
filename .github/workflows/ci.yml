@@ -119,13 +119,14 @@ jobs:
           host: '${{ vars.DEPLOY_SSH_HOST }}'
           username: '${{ vars.DEPLOY_SSH_USER }}'
           key: '${{ secrets.DEPLOY_SSH_KEY }}'
-          envs: APP_NAME,REGISTRY
+          envs: REGISTRY
           script: |
             set -e
+            export COMPOSE_PROJECT_NAME="${GITHUB_REPOSITORY#*/}"
             echo "${{ secrets.REGISTRY_PERSONAL_ACCESS_TOKEN }}" | docker login -u \"${{ vars.REGISTRY_PERSONAL_ACCESS_TOKEN_NAME }}\" --password-stdin $REGISTRY
-            cd /opt/$APP_NAME/docker-compose
-            docker compose -p $APP_NAME up -d
+            cd /opt/$COMPOSE_PROJECT_NAME/docker-compose
+            docker compose up -d
             sleep 5
-            docker compose -p $APP_NAME logs --tail 20
-            docker compose -p $APP_NAME ps -a --format 'table {{.Name}}\t{{.Image}}\t{{.Ports}}\t{{.Status}}\t{{lower .Networks}}'
+            docker compose logs --tail 20
+            docker compose ps -a --format 'table {{.Name}}\t{{.Image}}\t{{.Ports}}\t{{.Status}}\t{{lower .Networks}}'
 
