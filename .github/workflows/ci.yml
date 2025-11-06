@@ -28,13 +28,29 @@ jobs:
       - name: Log in to DigitalOcean Container Registry with short-lived credentials
         run: doctl registry login --expiry-seconds 1200
 
-      - name: Build/push block_relayer image
-        id: build-app-block-relayer-image
+      - name: Build/push builder image
         run: |
-          export IMAGE=$REGISTRY/block-relayer
+          export IMAGE=$REGISTRY/${GITHUB_REPOSITORY#*/}/builder
           export IMAGE_TAG=$(echo $GITHUB_SHA | head -c7)
           docker build \
             --cache-to=type=inline \
+            --cache-from type=registry,ref=$IMAGE:latest \
+            -t $IMAGE:$IMAGE_TAG \
+            -t $IMAGE:latest \
+            --target builder \
+            --push \
+            .
+          echo "IMAGE_TAG=$IMAGE_TAG" >> "$GITHUB_OUTPUT"
+          echo "IMAGE=$IMAGE" >> "$GITHUB_OUTPUT"
+
+      - name: Build/push block_relayer image
+        id: build-app-block-relayer-image
+        run: |
+          export IMAGE=$REGISTRY/${GITHUB_REPOSITORY#*/}/block-relayer
+          export IMAGE_TAG=$(echo $GITHUB_SHA | head -c7)
+          docker build \
+            --cache-to=type=inline \
+            --cache-from type=registry,ref=$REGISTRY/${GITHUB_REPOSITORY#*/}/builder:latest \
             --cache-from type=registry,ref=$IMAGE:latest \
             -t $IMAGE:$IMAGE_TAG \
             -t $IMAGE:latest \

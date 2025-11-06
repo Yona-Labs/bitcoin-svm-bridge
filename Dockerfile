@@ -1,4 +1,4 @@
-FROM ubuntu:22.04 AS builder
+FROM ubuntu:22.04 AS base
 
 WORKDIR /build
 
@@ -44,6 +44,12 @@ ENV ANCHOR_CLI=v0.31.1
 RUN cargo install --git https://github.com/coral-xyz/anchor --tag ${ANCHOR_CLI} anchor-cli --locked
 
 
+
+
+FROM base as builder
+
+WORKDIR /build
+
 COPY . .
 
 ENV PATH=$PATH:$NVM_DIR/versions/node/$NODE_VERSION/bin
@@ -56,6 +62,7 @@ RUN cd block_relayer \
     && cargo build --release
 
 #RUN find / -name block_relayer -type f
+
 
 
 FROM rust:1.91-slim-trixie AS app_block_relayer
