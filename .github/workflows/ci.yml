@@ -96,7 +96,6 @@ jobs:
 
       - name: Create environment variables
         run: |
-          export COMPOSE_PROJECT_NAME="${GITHUB_REPOSITORY#*/}"
           cat > ./docker-compose/.env << EOF
           BLOCK_RELAYER_IMAGE="${{ needs.build.outputs.app-block-relayer-image }}:${{ needs.build.outputs.app-block-relayer-image-tag }}"
           BLOCK_RELAYER_SECRET_KEY="${{ secrets.BLOCK_RELAYER_SECRET_KEY }}"
@@ -116,6 +115,8 @@ jobs:
 
       - name: Deploy with Docker Compose
         uses: appleboy/ssh-action@v1.2.2
+        env:
+          COMPOSE_PROJECT_NAME: "${GITHUB_REPOSITORY#*/}"
         with:
           host: '${{ vars.DEPLOY_SSH_HOST }}'
           username: '${{ vars.DEPLOY_SSH_USER }}'
