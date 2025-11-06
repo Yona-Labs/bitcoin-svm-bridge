@@ -68,4 +68,6 @@ WORKDIR /app
 COPY --from=builder /build/block_relayer/target/release/block_relayer /app/block_relayer
 #COPY --from=builder /workdir/programs/btc-relay /app/bin/btc_relay
 
+RUN chmod +x /app/block_relayer
+
 ENTRYPOINT [ "/app/block_relayer" ]
