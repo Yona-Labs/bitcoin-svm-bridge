@@ -5,7 +5,7 @@ WORKDIR /build
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update -qq \
-    && apt-get install -qq -y \
+    && apt-get install -qq -y --no-install-recommends \
        build-essential \
        git \
        curl \
@@ -15,10 +15,10 @@ RUN apt-get update -qq \
        python3-pip \
        libssl-dev \
        libudev-dev \
-       gcc-multilib
+       gcc-multilib \
+    && rm -rf /var/lib/apt/lists/* 
 
 ENV PATH=$PATH:/root/.cargo/bin
-
 RUN curl https://sh.rustup.rs -sfo rustup.sh \
     && sh rustup.sh -y \
     && rustup component add rustfmt clippy \
@@ -27,7 +27,6 @@ RUN curl https://sh.rustup.rs -sfo rustup.sh \
 ENV NODE_VERSION=v24.11.0 \
     NVM_CLI=v0.40.3 \
     NVM_DIR=/root/.nvm
-
 RUN curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/$NVM_CLI/install.sh | bash \
     && . $NVM_DIR/nvm.sh \
     && nvm install ${NODE_VERSION} \
@@ -35,18 +34,15 @@ RUN curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/$NVM_CLI/install.sh | 
     && nvm alias default node \
     && npm install -g yarn
 
-
 ENV SOLANA_CLI=v2.3.11
 RUN sh -c "$(curl -sSfL https://release.anza.xyz/${SOLANA_CLI}/install)"
-
 
 ENV ANCHOR_CLI=v0.31.1
 RUN cargo install --git https://github.com/coral-xyz/anchor --tag ${ANCHOR_CLI} anchor-cli --locked
 
 
 
-
-FROM base as builder
+FROM base AS builder
 
 WORKDIR /build
 
