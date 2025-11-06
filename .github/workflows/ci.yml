@@ -1,6 +1,6 @@
 on:
   push:
-    branches: [ ci ]
+    branches: [ main ]
   workflow_dispatch:
     inputs:
       run_make_builder_image:
@@ -10,7 +10,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  APP_NAME: block-relayer
+  PROJECT_NAME: bitcoin-svm-bridge
   REGISTRY: registry.digitalocean.com/mov3r-container
 
 jobs:
