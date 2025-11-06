@@ -116,7 +116,7 @@ jobs:
       - name: Deploy with Docker Compose
         uses: appleboy/ssh-action@v1.2.2
         env:
-          COMPOSE_PROJECT_NAME: "${GITHUB_REPOSITORY#*/}"
+          COMPOSE_PROJECT_NAME: bitcoin-svm-bridge
         with:
           host: '${{ vars.DEPLOY_SSH_HOST }}'
           username: '${{ vars.DEPLOY_SSH_USER }}'
