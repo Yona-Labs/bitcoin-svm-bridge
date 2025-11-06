@@ -4,7 +4,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  REGISTRY: registry.digitalocean.com/mov3r-container/${GITHUB_REPOSITORY#*/}
+  REGISTRY: registry.digitalocean.com/mov3r-container
 
 jobs:
   build:
@@ -31,7 +31,7 @@ jobs:
       - name: Build/push app image
         id: build-app-image
         run: |
-          export IMAGE=$REGISTRY/${{ matrix.env }}
+          export IMAGE=$REGISTRY/${GITHUB_REPOSITORY#*/}/${{ matrix.env }}
           export IMAGE_TAG=$(echo $GITHUB_SHA | head -c7)
           docker build \
             --cache-to=type=inline \
