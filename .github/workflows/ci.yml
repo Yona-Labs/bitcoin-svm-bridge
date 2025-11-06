@@ -17,9 +17,6 @@ jobs:
   make_builder_image:
     runs-on: ubuntu-latest
     if: ${{ inputs.run_make_builder_image == 'yes' }}
-    outputs:
-      app-block-relayer-image: ${{ steps.build-app-block-relayer-image.outputs.IMAGE }}
-      app-block-relayer-image-tag: ${{ steps.build-app-block-relayer-image.outputs.IMAGE_TAG }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -43,14 +40,12 @@ jobs:
             --target builder \
             --push \
             .
-          echo "IMAGE_TAG=$IMAGE_TAG" >> "$GITHUB_OUTPUT"
-          echo "IMAGE=$IMAGE" >> "$GITHUB_OUTPUT"
 
   build:
     runs-on: ubuntu-latest
     outputs:
-      app-image: ${{ steps.build-app-block-relayer-image.outputs.IMAGE }}
-      image-tag: ${{ steps.build-app-block-relayer-image.outputs.IMAGE_TAG }}
+      app-block-relayer-image: ${{ steps.build-app-block-relayer.outputs.IMAGE }}
+      app-block-relayer-image-tag: ${{ steps.build-app-block-relayer.outputs.IMAGE_TAG }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -64,7 +59,7 @@ jobs:
         run: doctl registry login --expiry-seconds 1200
 
       - name: Build/push block_relayer image
-        id: build-app-block-relayer-image
+        id: build-app-block-relayer
         run: |
           export IMAGE=$REGISTRY/${GITHUB_REPOSITORY#*/}/block-relayer
           export IMAGE_TAG=$(echo $GITHUB_SHA | head -c7)
@@ -94,7 +89,9 @@ jobs:
           echo '${{ secrets.CONFIG_TOML }}' > ./docker-compose/config/config.toml
 
       - name: Create solana keypair file
-        run: echo '${{ secrets.YONA_SOLANA_KEYPAIR }}' > ./docker-compose/config/yona-keypair.json
+        run: |
+          echo '${{ secrets.YONA_SOLANA_KEYPAIR }}' > ./docker-compose/config/yona-keypair.json
+          chmod 0600 ./docker-compose/config/yona-keypair.json
 
       - name: Create .env file
         run: |
