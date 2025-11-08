@@ -88,6 +88,7 @@ jobs:
         run: |
           mkdir -p ./docker-compose/config
           echo '${{ secrets.CONFIG_TOML }}' > ./docker-compose/config/config.toml
+          chmod 0664 ./docker-compose/config/config.toml
 
       - name: Create solana keypair file
         run: |

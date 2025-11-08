@@ -69,7 +69,8 @@ COPY --from=builder /build/block_relayer/target/release/block_relayer /app/block
 #COPY --from=builder /workdir/programs/btc-relay /app/bin/btc_relay
 
 RUN useradd -d /app -s /bin/bash -c "Yona user" yona \
-    && chown yona: -R /app \
+    && chown yona -R /app \
+    && chmod 0775 /app \
     && chmod +x /app/block_relayer
 
 ENV RUST_LOG=info \
