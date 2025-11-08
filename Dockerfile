@@ -76,6 +76,6 @@ RUN useradd -d /app -s /bin/bash -c "Yona user" yona \
 ENV RUST_LOG=info \
     RUST_BACKTRACE=1
 
-USER yona
+#USER yona
 
 ENTRYPOINT [ "./block_relayer" ]
