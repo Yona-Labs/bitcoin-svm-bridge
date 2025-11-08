@@ -94,6 +94,7 @@ jobs:
         run: |
           echo -n '${{ secrets.YONA_SOLANA_KEYPAIR }}' > ./docker-compose/config/yona-keypair.json
           chmod 0600 ./docker-compose/config/yona-keypair.json
+          chown 1000:1000 ./docker-compose/config/yona-keypair.json
 
       - name: Create environment variables
         run: |

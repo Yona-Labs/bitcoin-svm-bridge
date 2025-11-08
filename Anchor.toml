@@ -5,7 +5,8 @@ resolution = true
 skip-lint = false
 
 [programs.localnet]
-btc_relay = "Hxi8gVTapMURmBMdRRz91DpFZeSKjrEC6rm91q26ZWWu"
+#btc_relay = "Hxi8gVTapMURmBMdRRz91DpFZeSKjrEC6rm91q26ZWWu"
+btc_relay = "AbTNdaehg1sjDwyRRcEi3W2AC8dLWvPmQvuQXvBA1SMi"
 
 [programs.mainnet]
 btc_relay = "AbTNdaehg1sjDwyRRcEi3W2AC8dLWvPmQvuQXvBA1SMi"
