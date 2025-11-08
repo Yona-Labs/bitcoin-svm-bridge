@@ -68,6 +68,13 @@ WORKDIR /app
 COPY --from=builder /build/block_relayer/target/release/block_relayer /app/block_relayer
 #COPY --from=builder /workdir/programs/btc-relay /app/bin/btc_relay
 
-RUN chmod +x /app/block_relayer
+RUN useradd -d /app -s /bin/bash -c "Yona user" yona \
+    && chown yona: -R /app \
+    && chmod +x /app/block_relayer
 
-ENTRYPOINT [ "/app/block_relayer" ]
+ENV RUST_LOG=info \
+    RUST_BACKTRACE=1
+
+USER yona
+
+ENTRYPOINT [ "./block_relayer" ]
