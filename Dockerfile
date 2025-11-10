@@ -70,4 +70,6 @@ COPY --from=builder /build/block_relayer/target/release/block_relayer /app/block
 
 RUN chmod +x /app/block_relayer
 
+EXPOSE 8199/tcp
+
 ENTRYPOINT [ "/app/block_relayer" ]
