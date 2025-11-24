@@ -1,0 +1,33 @@
+x-common-dns: &common-dns
+  dns: 8.8.8.8
+  dns_opt: [ 'ndots:0' ]
+x-common-network: &common-network
+  networks:
+    - bitcoin-svm-bridge
+x-network-host: &network-host
+ network_mode: host
+x-common-logging: &common-logging
+  logging:
+    driver: "json-file"
+    options:
+      max-size: "1g"
+      max-file: "7"
+
+services:
+  block-relayer:
+    <<: [ *common-network, *common-dns, *common-logging ]
+    hostname: block-relayer
+    image: ${BLOCK_RELAYER_IMAGE}
+    command: [ "relay", "${BLOCK_RELAYER_SECRET_KEY}" ]
+    environment:
+      RUST_BACKTRACE: ${BLOCK_RELAYER_RUST_BACKTRACE}
+      RUST_LOG: ${BLOCK_RELAYER_RUST_LOG}
+    volumes:
+      - ./config/config.toml:/app/config.toml
+      - ./config/yona-keypair.json:/app/yona-keypair.json
+    ports:
+      - 127.0.0.1:8199:8199
+
+networks:
+  bitcoin-svm-bridge:
+    external: true
