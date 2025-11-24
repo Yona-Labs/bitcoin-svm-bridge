@@ -92,6 +92,11 @@ pub async fn relay_blocks_from_full_node(config: RelayConfig, wait_for_new_block
             }
         };
 
+        log::info!("raw len = {}", raw_account.data.len());
+        let from_bytes = u32::from_le_bytes(raw_account.data[12..16].try_into().unwrap());
+        log::info!("last_diff_adjustment from raw bytes = {}", from_bytes);
+
+
         // TODO there seems to be an allocation of 8 unneeded bytes, which makes deserialization fail
         let main_state_data =
             match MainState::try_deserialize_unchecked(&mut &raw_account.data[..8160]) {
@@ -102,6 +107,8 @@ pub async fn relay_blocks_from_full_node(config: RelayConfig, wait_for_new_block
                     continue;
                 }
             };
+        
+        log::info!("main_state_data.last_diff_adjustment (deserialized) = {}", main_state_data.last_diff_adjustment);
 
         let mut block_hash = main_state_data.tip_block_hash;
         let commited_header = match tokio::task::block_in_place(|| {
