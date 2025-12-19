@@ -1155,7 +1155,9 @@ dependencies = [
  "clap",
  "env_logger 0.11.4",
  "futures",
+ "jsonrpc",
  "log",
+ "minreq",
  "once_cell",
  "rand 0.8.5",
  "reqwest 0.12.5",
@@ -3548,11 +3550,12 @@ dependencies = [
 
 [[package]]
 name = "minreq"
-version = "2.12.0"
+version = "2.14.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "763d142cdff44aaadd9268bebddb156ef6c65a0e13486bb81673cf2d8739f9b0"
+checksum = "05015102dad0f7d61691ca347e9d9d9006685a64aefb3d79eecf62665de2153d"
 dependencies = [
- "log",
+ "rustls 0.21.12",
+ "rustls-native-certs 0.6.3",
  "serde",
  "serde_json",
 ]
@@ -4619,6 +4622,18 @@ dependencies = [
  "rustls-webpki 0.103.3",
  "subtle",
  "zeroize",
+]
+
+[[package]]
+name = "rustls-native-certs"
+version = "0.6.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a9aace74cb666635c918e9c12bc0d348266037aa8eb599b5cba565709a8dff00"
+dependencies = [
+ "openssl-probe",
+ "rustls-pemfile 1.0.4",
+ "schannel",
+ "security-framework 2.11.1",
 ]
 
 [[package]]

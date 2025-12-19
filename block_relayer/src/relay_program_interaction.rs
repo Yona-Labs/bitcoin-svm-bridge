@@ -29,35 +29,14 @@ use serde::Serialize;
 use std::fmt;
 use std::sync::Arc;
 
-/// Calculate the difficulty adjustment boundary height for a given block height.
-/// Difficulty adjustment happens every 2016 blocks.
-/// Returns the height of the most recent difficulty adjustment block (inclusive).
-pub(crate) fn calculate_diff_adjustment_boundary(height: u32) -> u32 {
-    const DIFF_ADJUSTMENT_INTERVAL: u32 = 2016;
-    height - (height % DIFF_ADJUSTMENT_INTERVAL)
-}
-
 pub(crate) fn reconstruct_commited_header(
     bitcoind_client: &BitcoinRpcClient,
     hash: &BlockHash,
     height: u32,
+    last_diff_adjustment: u32,
 ) -> Result<CommittedBlockHeader, BtcRpcError> {
     let header = bitcoind_client.get_block_header(hash)?;
     debug!("Got header {header:?}");
-
-    // Calculate the correct last_diff_adjustment for this block height
-    // Difficulty adjustment happens every 2016 blocks
-    let boundary_height = calculate_diff_adjustment_boundary(height);
-    
-    let last_diff_adjustment = if boundary_height == height {
-        // This block is itself a difficulty adjustment block
-        header.time
-    } else {
-        // Get the timestamp of the most recent difficulty adjustment block
-        let boundary_hash = bitcoind_client.get_block_hash(boundary_height as u64)?;
-        let boundary_block = bitcoind_client.get_block(&boundary_hash)?;
-        boundary_block.header.time
-    };
 
     let mut prev_block_timestamps = [0; 10];
     for i in 0..10 {
@@ -342,6 +321,7 @@ pub async fn relay_tx(
             &client_clone,
             &block_hash,
             block_info.height as u32,
+            main_state_data.last_diff_adjustment,
         )
     })
     .await
@@ -495,82 +475,5 @@ pub async fn deposit_tx_state(
         },
         Err(AnchorClientError::AccountNotFound) => Ok(DepositTxState::NotRelayed),
         Err(e) => Err(e),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::calculate_diff_adjustment_boundary;
-
-    #[test]
-    fn test_calculate_diff_adjustment_boundary_at_boundary() {
-        // Test blocks that are exactly at difficulty adjustment boundaries
-        assert_eq!(calculate_diff_adjustment_boundary(0), 0);
-        assert_eq!(calculate_diff_adjustment_boundary(2016), 2016);
-        assert_eq!(calculate_diff_adjustment_boundary(4032), 4032);
-        assert_eq!(calculate_diff_adjustment_boundary(6048), 6048);
-    }
-
-    #[test]
-    fn test_calculate_diff_adjustment_boundary_between_boundaries() {
-        // Test blocks that are between boundaries
-        // Should round down to the previous boundary
-        
-        // Height 1-2015 should map to boundary 0
-        assert_eq!(calculate_diff_adjustment_boundary(1), 0);
-        assert_eq!(calculate_diff_adjustment_boundary(100), 0);
-        assert_eq!(calculate_diff_adjustment_boundary(1000), 0);
-        assert_eq!(calculate_diff_adjustment_boundary(2015), 0);
-        
-        // Height 2017-4031 should map to boundary 2016
-        assert_eq!(calculate_diff_adjustment_boundary(2017), 2016);
-        assert_eq!(calculate_diff_adjustment_boundary(3000), 2016);
-        assert_eq!(calculate_diff_adjustment_boundary(4031), 2016);
-        
-        // Height 4033-6047 should map to boundary 4032
-        assert_eq!(calculate_diff_adjustment_boundary(4033), 4032);
-        assert_eq!(calculate_diff_adjustment_boundary(5000), 4032);
-        assert_eq!(calculate_diff_adjustment_boundary(6047), 4032);
-    }
-
-    #[test]
-    fn test_calculate_diff_adjustment_boundary_large_heights() {
-        // Test with larger heights to ensure the logic works beyond initial boundaries
-        assert_eq!(calculate_diff_adjustment_boundary(10000), 8064); // 10000 - (10000 % 2016) = 10000 - 1936 = 8064
-        assert_eq!(calculate_diff_adjustment_boundary(100000), 98784); // 100000 - (100000 % 2016) = 100000 - 1216 = 98784
-        assert_eq!(calculate_diff_adjustment_boundary(209664), 209664); // Exactly at a boundary (104 * 2016)
-        assert_eq!(calculate_diff_adjustment_boundary(210000), 209664); // Should map to previous boundary
-        assert_eq!(calculate_diff_adjustment_boundary(210001), 209664); // One past boundary
-        assert_eq!(calculate_diff_adjustment_boundary(211680), 211680); // Exactly at next boundary (105 * 2016)
-    }
-
-    #[test]
-    fn test_calculate_diff_adjustment_boundary_edge_cases() {
-        // Test edge cases
-        assert_eq!(calculate_diff_adjustment_boundary(u32::MAX), u32::MAX - (u32::MAX % 2016));
-        
-        // Test heights just before boundaries
-        assert_eq!(calculate_diff_adjustment_boundary(2015), 0);
-        assert_eq!(calculate_diff_adjustment_boundary(4031), 2016);
-        
-        // Test heights just after boundaries
-        assert_eq!(calculate_diff_adjustment_boundary(2016), 2016);
-        assert_eq!(calculate_diff_adjustment_boundary(2017), 2016);
-    }
-
-    #[test]
-    fn test_calculate_diff_adjustment_boundary_produces_correct_interval() {
-        // Verify that all heights in an interval map to the same boundary
-        let boundary = calculate_diff_adjustment_boundary(5000);
-        for height in 4032..=6047 {
-            assert_eq!(
-                calculate_diff_adjustment_boundary(height),
-                boundary,
-                "Height {} should map to boundary {}, but got {}",
-                height,
-                boundary,
-                calculate_diff_adjustment_boundary(height)
-            );
-        }
     }
 }

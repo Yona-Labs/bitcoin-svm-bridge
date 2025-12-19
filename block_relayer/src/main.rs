@@ -66,7 +66,7 @@ fn main() {
         RelayerCommand::Relay { bridge_privkey } => {
             let key = SecretKey::from_str(&bridge_privkey).expect("Failed to decode privkey");
             let secp256k1 = Secp256k1::new();
-            let private = PrivateKey::new(key, Network::Regtest);
+            let private = PrivateKey::new(key, Network::Bitcoin);
 
             let bridge_pubkey = private.public_key(&secp256k1);
             let pubkey_hash = Hash160::hash(&bridge_pubkey.to_bytes());

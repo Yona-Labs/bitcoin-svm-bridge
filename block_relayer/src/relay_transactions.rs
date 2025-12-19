@@ -1,21 +1,23 @@
 use crate::bridge_db::{
-    insert_solana_transaction, set_transaction_processed, solana_transaction_processed,
     WithdrawTransactionInfo,
 };
 use crate::config::RelayConfig;
 use crate::relay_program_interaction::*;
 use actix_cors::Cors;
 use actix_web::{web, App, HttpResponse, HttpServer, Responder};
-use anchor_client::anchor_lang::{AccountDeserialize, AnchorDeserialize, Discriminator, Id};
+use anchor_client::anchor_lang::Id;
 use anchor_client::solana_sdk::pubkey::Pubkey;
 use anchor_client::solana_sdk::signature::{Keypair, Signature};
-use anchor_client::{Client as AnchorClient, Program};
-use bitcoin::{Address, Network, Script, Txid};
+use anchor_client::Program;
+use bitcoin::{Address, Network, Txid};
 use bitcoincore_rpc::Client as BitcoinRpcClient;
+use bitcoincore_rpc::Error as BtcError;
+
 use btc_relay::program::BtcRelay;
 use btc_relay::utils::bridge_deposit_script;
 use futures::future::join_all;
-use log::{error, info};
+use jsonrpc::minreq_http::MinreqHttpTransport;
+use log::{error};
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 use std::str::FromStr;
@@ -185,7 +187,7 @@ async fn get_deposit_address(
 
     let script = bridge_deposit_script(yona_address.to_bytes(), data.deposit_pubkey_hash);
 
-    let deposit_address = Address::p2wsh(script.as_script(), Network::Regtest);
+    let deposit_address = Address::p2wsh(script.as_script(), Network::Bitcoin);
 
     HttpResponse::Ok().json(deposit_address.to_string())
 }
@@ -197,9 +199,11 @@ pub async fn relay_transactions(
 ) {
     let yona_client = get_yona_client(&config).expect("Couldn't create Yona client");
 
-    let bitcoin_rpc_client =
-        BitcoinRpcClient::new(&config.bitcoind_url, config.bitcoin_auth.into())
-            .expect("Couldn't create Bitcoin client");
+    let transport = MinreqHttpTransport::builder()
+    .url(&config.bitcoind_url)
+    .map_err(|e| BtcError::JsonRpc(e.into())).unwrap().build();
+
+    let bitcoin_rpc_client = BitcoinRpcClient::from_jsonrpc(jsonrpc::Client::with_transport(transport));
 
     let relay_program = BtcRelay::id();
     let (main_state, _) = Pubkey::find_program_address(&[b"state"], &relay_program);

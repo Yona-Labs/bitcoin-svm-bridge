@@ -26,6 +26,8 @@ solana-transaction-status = "2"
 sqlx = { version = "0.8", features = ["sqlite", "runtime-tokio"] }
 tokio = { version = "1", features = ["rt-multi-thread"] }
 toml = "0.8"
+jsonrpc = { version = "0.18", features = ["minreq_http"] }
+minreq = { version = "2.14.1", features = ["https-rustls-probe"] }
 
 [dev-dependencies]
 bollard = "0.16.1"

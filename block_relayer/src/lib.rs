@@ -10,9 +10,6 @@ use crate::bridge_db::{
 };
 use crate::config::RelayConfig;
 use crate::relay_program_interaction::*;
-use actix_cors::Cors;
-use actix_web::web::block;
-use actix_web::{web, App, HttpResponse, HttpServer, Responder};
 use anchor_client::anchor_lang::{AccountDeserialize, AnchorDeserialize, Discriminator, Id};
 use anchor_client::solana_client::rpc_client::GetConfirmedSignaturesForAddress2Config;
 use anchor_client::solana_client::rpc_config::RpcTransactionConfig;
@@ -20,7 +17,7 @@ use anchor_client::solana_sdk::commitment_config::CommitmentConfig;
 use anchor_client::solana_sdk::pubkey::Pubkey;
 use anchor_client::solana_sdk::signature::{read_keypair_file, Keypair, Signature};
 use anchor_client::{
-    solana_client, Client as AnchorClient, ClientError as AnchorClientError, Cluster, Program,
+    solana_client, Client as AnchorClient, ClientError as AnchorClientError, Cluster,
 };
 use base64::Engine;
 use bitcoin::absolute::LockTime;
@@ -34,23 +31,20 @@ use bitcoin::{
     Address, Amount, BlockHash, EcdsaSighashType, KnownHrp, Network, OutPoint, PrivateKey,
     PublicKey, Script, Sequence, Transaction, TxIn, TxOut, Txid, Witness,
 };
+use bitcoincore_rpc::jsonrpc::minreq_http::MinreqHttpTransport;
 use bitcoincore_rpc::{Client as BitcoinRpcClient, Error as BtcError, RpcApi};
 use bridge_db::Utxo;
 use btc_relay::events::{DepositTxVerified, StoreHeader, Withdrawal};
 use btc_relay::program::BtcRelay;
 use btc_relay::state::MainState;
 use btc_relay::utils::bridge_deposit_script;
-use futures::future::join_all;
 use log::{debug, error, info};
-use serde::{Deserialize, Serialize};
 use solana_transaction_status::option_serializer::OptionSerializer;
 use sqlx::SqlitePool;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
-use std::{env, error, thread};
-use tokio::runtime::Runtime;
-use tokio::task::spawn_blocking;
+use std::{env, error};
 
 pub fn get_yona_client(
     config: &RelayConfig,
@@ -72,8 +66,12 @@ pub fn get_yona_client(
 pub async fn relay_blocks_from_full_node(config: RelayConfig, wait_for_new_block: u64) {
     let yona_client = get_yona_client(&config).expect("Couldn't create Yona client");
 
-    let bitcoind_client = BitcoinRpcClient::new(&config.bitcoind_url, config.bitcoin_auth.into())
-        .expect("Couldn't create Bitcoin client");
+    let transport = MinreqHttpTransport::builder()
+    .url(&config.bitcoind_url)
+    .map_err(|e| BtcError::JsonRpc(e.into())).unwrap().build();
+
+    let bitcoind_client = BitcoinRpcClient::from_jsonrpc(jsonrpc::Client::with_transport(transport));
+        // .expect("Couldn't create Bitcoin client");
 
     let relay_program = BtcRelay::id();
     let program = yona_client
@@ -92,6 +90,11 @@ pub async fn relay_blocks_from_full_node(config: RelayConfig, wait_for_new_block
             }
         };
 
+        // log::info!("raw len = {}", raw_account.data.len());
+        // let from_bytes = u32::from_le_bytes(raw_account.data[12..16].try_into().unwrap());
+        // log::info!("last_diff_adjustment from raw bytes = {}", from_bytes);
+
+
         // TODO there seems to be an allocation of 8 unneeded bytes, which makes deserialization fail
         let main_state_data =
             match MainState::try_deserialize_unchecked(&mut &raw_account.data[..8160]) {
@@ -102,6 +105,8 @@ pub async fn relay_blocks_from_full_node(config: RelayConfig, wait_for_new_block
                     continue;
                 }
             };
+        
+        // log::info!("main_state_data.last_diff_adjustment (deserialized) = {}", main_state_data.last_diff_adjustment);
 
         let mut block_hash = main_state_data.tip_block_hash;
         let commited_header = match tokio::task::block_in_place(|| {
@@ -109,6 +114,7 @@ pub async fn relay_blocks_from_full_node(config: RelayConfig, wait_for_new_block
                 &bitcoind_client,
                 &BlockHash::from_byte_array(block_hash),
                 main_state_data.block_height,
+                main_state_data.last_diff_adjustment,
             )
         }) {
             Ok(header) => header,
@@ -251,11 +257,16 @@ pub async fn run_init_program(
     let yona_client =
         get_yona_client(&config).map_err(BlockRelayerError::CouldNotInitYonaClient)?;
 
-    let bitcoind_client = BitcoinRpcClient::new(&config.bitcoind_url, config.bitcoin_auth.into())?;
+    let transport = MinreqHttpTransport::builder()
+    .url(&config.bitcoind_url)
+    .map_err(|e| BtcError::JsonRpc(e.into())).unwrap().build();
+
+    let bitcoind_client = BitcoinRpcClient::from_jsonrpc(jsonrpc::Client::with_transport(transport));
 
     let relay_program = BtcRelay::id();
     let program = yona_client.program(relay_program)?;
-
+    let res = bitcoind_client.get_block_count().unwrap();
+    println!("{:?}", res);
     let tip = tokio::task::block_in_place(|| bitcoind_client.get_chain_tips())?.remove(0);
     debug!("Current bitcoin tip {tip:?}");
 
@@ -289,7 +300,11 @@ pub async fn run_submit_block_fork(
     // TODO there seems to be an allocation of 8 unneeded bytes, which makes deserialization fail
     let main_state_data = MainState::try_deserialize_unchecked(&mut &raw_account.data[..8160])?;
 
-    let bitcoind_client = BitcoinRpcClient::new(&config.bitcoind_url, config.bitcoin_auth.into())?;
+    let transport = MinreqHttpTransport::builder()
+    .url(&config.bitcoind_url)
+    .map_err(|e| BtcError::JsonRpc(e.into())).unwrap().build();
+
+    let bitcoind_client = BitcoinRpcClient::from_jsonrpc(jsonrpc::Client::with_transport(transport));
 
     let relay_program = BtcRelay::id();
     let program = yona_client.program(relay_program)?;
@@ -302,6 +317,7 @@ pub async fn run_submit_block_fork(
             &bitcoind_client,
             &block.header.prev_blockhash,
             block_number as u32 - 1,
+            main_state_data.last_diff_adjustment,
         )
     })?;
 
@@ -336,9 +352,11 @@ pub async fn process_bridge_events(
 ) {
     let yona_client = get_yona_client(&config).expect("Couldn't create Yona client");
 
-    let bitcoin_rpc_client =
-        BitcoinRpcClient::new(&config.bitcoind_url, config.bitcoin_auth.into())
-            .expect("Couldn't create Bitcoin client");
+    let transport = MinreqHttpTransport::builder()
+    .url(&config.bitcoind_url)
+    .map_err(|e| BtcError::JsonRpc(e.into())).unwrap().build();
+
+    let bitcoin_rpc_client = BitcoinRpcClient::from_jsonrpc(jsonrpc::Client::with_transport(transport));
 
     let program = yona_client
         .program(btc_relay::id())
@@ -419,7 +437,7 @@ pub async fn process_bridge_events(
                         event.deposit_pubkey_hash,
                     );
                     let expected_script_pubkey =
-                        Address::p2wsh(deposit_script.as_script(), Network::Regtest)
+                        Address::p2wsh(deposit_script.as_script(), Network::Bitcoin)
                             .script_pubkey();
 
                     for (i, out) in bitcoin_tx.output.into_iter().enumerate() {
@@ -450,7 +468,7 @@ pub async fn process_bridge_events(
                     };
                     let address = Address::from_str(&event.bitcoin_address)
                         .unwrap()
-                        .require_network(Network::Regtest)
+                        .require_network(Network::Bitcoin)
                         .unwrap();
 
                     let tx_out = TxOut {
@@ -489,7 +507,7 @@ pub async fn process_bridge_events(
                         &bridge_pubkey
                             .try_into()
                             .expect("bridge_pubkey is compressed"),
-                        KnownHrp::Regtest,
+                        KnownHrp::Mainnet,
                     )
                     .script_pubkey();
                     let change_out = TxOut {
