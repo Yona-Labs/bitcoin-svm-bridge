@@ -46,6 +46,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::{env, error};
 
+
 pub fn get_yona_client(
     config: &RelayConfig,
 ) -> Result<AnchorClient<Arc<Keypair>>, Box<dyn error::Error>> {
@@ -109,7 +110,7 @@ pub async fn relay_blocks_from_full_node(config: RelayConfig, wait_for_new_block
         // log::info!("main_state_data.last_diff_adjustment (deserialized) = {}", main_state_data.last_diff_adjustment);
 
         let mut block_hash = main_state_data.tip_block_hash;
-        let commited_header = match tokio::task::block_in_place(|| {
+        let mut commited_header = match tokio::task::block_in_place(|| {
             reconstruct_commited_header(
                 &bitcoind_client,
                 &BlockHash::from_byte_array(block_hash),
@@ -124,6 +125,16 @@ pub async fn relay_blocks_from_full_node(config: RelayConfig, wait_for_new_block
                 continue;
             }
         };
+
+        // ВАЖНО: commited_header должен соответствовать текущему tip на чейне,
+        // а chain_work является частью commitment.
+        commited_header.chain_work = main_state_data.chain_work;
+
+        info!("onchain tip_commit = {:x?}", main_state_data.tip_commit_hash);
+        info!("onchain chain_work = {:x?}", main_state_data.chain_work);
+        info!("offchain chain_work = {:x?}", commited_header.chain_work);
+        info!("offchain commited_header.height = {}", commited_header.blockheight);
+
         block_hash.reverse();
 
         info!(
@@ -312,7 +323,7 @@ pub async fn run_submit_block_fork(
     let block_hash = tokio::task::block_in_place(|| bitcoind_client.get_block_hash(block_number))?;
     let block = tokio::task::block_in_place(|| bitcoind_client.get_block(&block_hash))?;
 
-    let prev_commited_header = tokio::task::block_in_place(|| {
+    let mut prev_commited_header = tokio::task::block_in_place(|| {
         reconstruct_commited_header(
             &bitcoind_client,
             &block.header.prev_blockhash,
@@ -320,6 +331,8 @@ pub async fn run_submit_block_fork(
             main_state_data.last_diff_adjustment,
         )
     })?;
+
+    prev_commited_header.chain_work = main_state_data.chain_work;
 
     Ok(submit_block_fork(
         &program,

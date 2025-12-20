@@ -1,5 +1,6 @@
 use crate::merkle::Proof;
 use anchor_client::anchor_lang::prelude::{AccountDeserialize, AccountMeta};
+use btc_relay::utils::{get_difficulty, nbits_to_target};
 use anchor_client::solana_sdk::compute_budget::ComputeBudgetInstruction;
 use anchor_client::solana_sdk::pubkey::Pubkey;
 use anchor_client::solana_sdk::signature::{Keypair, Signature};
@@ -28,6 +29,46 @@ use log::{debug, info};
 use serde::Serialize;
 use std::fmt;
 use std::sync::Arc;
+
+
+// u256 big-endian: lhs -= rhs
+fn sub_in_place(lhs: &mut [u8; 32], rhs: [u8; 32]) {
+    let mut borrow: i16 = 0;
+    for i in (0..32).rev() {
+        let a = lhs[i] as i16 - borrow;
+        let b = rhs[i] as i16;
+        let mut v = a - b;
+        if v < 0 {
+            v += 256;
+            borrow = 1;
+        } else {
+            borrow = 0;
+        }
+        lhs[i] = v as u8;
+    }
+    debug_assert!(borrow == 0, "chain_work underflow");
+}
+
+fn chain_work_at_height(
+    bitcoind_client: &BitcoinRpcClient,
+    yona_tip_height: u32,
+    yona_tip_chain_work: [u8; 32],
+    target_height: u32,
+) -> Result<[u8; 32], BtcRpcError> {
+    if target_height > yona_tip_height {
+        return Ok([0; 32]);
+    }
+
+    let mut cw = yona_tip_chain_work;
+    // cw(target) = cw(tip) - sum_{h=target+1..tip} diff(h)
+    for h in (target_height + 1..=yona_tip_height).rev() {
+        let bh = bitcoind_client.get_block_hash(h as u64)?;
+        let hdr = bitcoind_client.get_block_header(&bh)?;
+        let diff = get_difficulty(nbits_to_target(hdr.bits.to_consensus()));
+        sub_in_place(&mut cw, diff);
+    }
+    Ok(cw)
+}
 
 pub(crate) fn reconstruct_commited_header(
     bitcoind_client: &BitcoinRpcClient,
@@ -192,7 +233,7 @@ pub(crate) async fn submit_block(
         Pubkey::find_program_address(&[b"header", block_hash.as_slice()], &program.id());
 
     let header_account = AccountMeta::new(header_topic, false);
-
+    
     let res = program
         .request()
         .accounts(SubmitBlockHeaders {
@@ -267,6 +308,7 @@ pub enum RelayTxError {
     BitcoinRpc(BtcRpcError),
     TxIsNotIncludedToBlock,
     CouldNotFindTxidInBlock,
+    TxBlockHeaderNotRelayedYet,
 }
 
 impl From<AnchorClientError> for RelayTxError {
@@ -315,14 +357,26 @@ pub async fn relay_tx(
         .await
         .expect("no panic")?;
 
+    let tx_height = block_info.height as u32;
+    if tx_height > main_state_data.block_height {
+        // Заголовок блока с этой транзакцией ещё не зарелеен в Yona → commitment == 0 → будет PrevBlockCommitment
+        return Err(RelayTxError::TxBlockHeaderNotRelayedYet);
+    }
     let client_clone = bitcoind_client.clone();
     let commited_header = tokio::task::spawn_blocking(move || {
-        reconstruct_commited_header(
+        let mut ch = reconstruct_commited_header(
             &client_clone,
             &block_hash,
-            block_info.height as u32,
+            tx_height,
             main_state_data.last_diff_adjustment,
-        )
+        )?;
+        ch.chain_work = chain_work_at_height(
+            &client_clone,
+            main_state_data.block_height,
+            main_state_data.chain_work,
+            tx_height,
+        )?;
+        Ok::<_, BtcRpcError>(ch)
     })
     .await
     .expect("no panic")?;
