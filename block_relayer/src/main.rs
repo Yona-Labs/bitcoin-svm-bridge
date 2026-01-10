@@ -23,6 +23,9 @@ use tokio::runtime::Runtime;
 enum RelayerCommand {
     InitProgram {
         deposit_pubkey: String,
+        /// Optional: init at a specific BTC height (useful to test difficulty retargets)
+        #[arg(long)]
+        init_height: Option<u32>,
     },
     Relay {
         bridge_privkey: String,
@@ -53,13 +56,13 @@ fn main() {
     let runtime = Runtime::new().expect("tokio runtime to be created");
 
     match cli.command {
-        RelayerCommand::InitProgram { deposit_pubkey } => {
+        RelayerCommand::InitProgram { deposit_pubkey, init_height } => {
             let bridge_pubkey: [u8; 33] =
                 FromHex::from_hex(&deposit_pubkey).expect("Failed to decode pubkey");
             let pubkey_hash = Hash160::hash(&bridge_pubkey);
 
             let result = runtime
-                .block_on(run_init_program(config, pubkey_hash.to_byte_array()))
+                .block_on(run_init_program(config, pubkey_hash.to_byte_array(), init_height))
                 .expect("Relay program initialization failed");
             println!("Initialization tx signature {}", result);
         }

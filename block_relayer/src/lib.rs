@@ -31,6 +31,7 @@ use bitcoin::{
     Address, Amount, BlockHash, EcdsaSighashType, KnownHrp, Network, OutPoint, PrivateKey,
     PublicKey, Script, Sequence, Transaction, TxIn, TxOut, Txid, Witness,
 };
+use btc_relay::utils::{compute_new_nbits, nbits_to_target};
 use bitcoincore_rpc::jsonrpc::minreq_http::MinreqHttpTransport;
 use bitcoincore_rpc::{Client as BitcoinRpcClient, Error as BtcError, RpcApi};
 use bridge_db::Utxo;
@@ -45,7 +46,6 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 use std::{env, error};
-
 
 pub fn get_yona_client(
     config: &RelayConfig,
@@ -91,11 +91,6 @@ pub async fn relay_blocks_from_full_node(config: RelayConfig, wait_for_new_block
             }
         };
 
-        // log::info!("raw len = {}", raw_account.data.len());
-        // let from_bytes = u32::from_le_bytes(raw_account.data[12..16].try_into().unwrap());
-        // log::info!("last_diff_adjustment from raw bytes = {}", from_bytes);
-
-
         // TODO there seems to be an allocation of 8 unneeded bytes, which makes deserialization fail
         let main_state_data =
             match MainState::try_deserialize_unchecked(&mut &raw_account.data[..8160]) {
@@ -107,8 +102,6 @@ pub async fn relay_blocks_from_full_node(config: RelayConfig, wait_for_new_block
                 }
             };
         
-        // log::info!("main_state_data.last_diff_adjustment (deserialized) = {}", main_state_data.last_diff_adjustment);
-
         let mut block_hash = main_state_data.tip_block_hash;
         let mut commited_header = match tokio::task::block_in_place(|| {
             reconstruct_commited_header(
@@ -126,14 +119,7 @@ pub async fn relay_blocks_from_full_node(config: RelayConfig, wait_for_new_block
             }
         };
 
-        // ВАЖНО: commited_header должен соответствовать текущему tip на чейне,
-        // а chain_work является частью commitment.
         commited_header.chain_work = main_state_data.chain_work;
-
-        info!("onchain tip_commit = {:x?}", main_state_data.tip_commit_hash);
-        info!("onchain chain_work = {:x?}", main_state_data.chain_work);
-        info!("offchain chain_work = {:x?}", commited_header.chain_work);
-        info!("offchain commited_header.height = {}", commited_header.blockheight);
 
         block_hash.reverse();
 
@@ -202,6 +188,43 @@ pub async fn relay_blocks_from_full_node(config: RelayConfig, wait_for_new_block
             }
         };
 
+
+        if new_height % 2016 == 0 {
+            let prev_hash = tokio::task::block_in_place(|| bitcoind_client.get_block_hash((new_height - 1) as u64)).expect("Bad retarget");
+            let start_hash = tokio::task::block_in_place(|| bitcoind_client.get_block_hash((new_height - 2016) as u64)).expect("Bad retarget");
+
+            let prev_hdr = tokio::task::block_in_place(|| bitcoind_client.get_block_header(&prev_hash)).expect("Bad retarget");
+            let start_hdr = tokio::task::block_in_place(|| bitcoind_client.get_block_header(&start_hash)).expect("Bad retarget");
+
+            if main_state_data.last_diff_adjustment != start_hdr.time {
+                error!("[RETARGET] BAD STATE: main_state.last_diff_adjustment={} but BTC start_time(H-2016)={}. You initialized incorrectly; retarget may fail.",
+                    main_state_data.last_diff_adjustment,
+                    start_hdr.time
+                );
+            }
+
+            let mut prev_target = nbits_to_target(prev_hdr.bits.to_consensus());
+            let expected_nbits = compute_new_nbits(prev_hdr.time, start_hdr.time, &mut prev_target);
+
+            let actual_nbits = block_to_submit.header.bits.to_consensus();
+
+            info!(
+                "[RETARGET CHECK] height={} expected={:08x} actual={:08x} start_time={} prev_time={}",
+                new_height, expected_nbits, actual_nbits, start_hdr.time, prev_hdr.time
+            );
+
+            if expected_nbits != actual_nbits {
+                error!(
+                    "[RETARGET CHECK] MISMATCH at height {}: expected {:08x} got {:08x}. NOT submitting.",
+                    new_height, expected_nbits, actual_nbits
+                );
+                tokio::time::sleep(Duration::from_secs(10)).await;
+                continue;
+            }
+        }
+
+
+
         if let Err(e) = submit_block(
             &program,
             main_state,
@@ -264,6 +287,7 @@ impl From<InitError> for BlockRelayerError {
 pub async fn run_init_program(
     config: RelayConfig,
     deposit_pubkey_hash: [u8; 20],
+    init_height: Option<u32>,
 ) -> Result<Signature, BlockRelayerError> {
     let yona_client =
         get_yona_client(&config).map_err(BlockRelayerError::CouldNotInitYonaClient)?;
@@ -276,19 +300,24 @@ pub async fn run_init_program(
 
     let relay_program = BtcRelay::id();
     let program = yona_client.program(relay_program)?;
-    let res = bitcoind_client.get_block_count().unwrap();
-    println!("{:?}", res);
-    let tip = tokio::task::block_in_place(|| bitcoind_client.get_chain_tips())?.remove(0);
-    debug!("Current bitcoin tip {tip:?}");
+    
+    let (block_height, block_hash) = if let Some(h) = init_height {
+        let bh = tokio::task::block_in_place(|| bitcoind_client.get_block_hash(h as u64))?;
+        (h, bh)
+    } else {
+        let best = tokio::task::block_in_place(|| bitcoind_client.get_best_block_hash())?;
+        let info = tokio::task::block_in_place(|| bitcoind_client.get_block_info(&best))?;
+        (info.height as u32, best)
+    };
 
-    let last_block = tokio::task::block_in_place(|| bitcoind_client.get_block(&tip.hash))?;
-    debug!("Bitcoin last block {last_block:?}");
-
+    debug!("Init using BTC block height={block_height}, hash={block_hash:02x}");
+    let last_block = tokio::task::block_in_place(|| bitcoind_client.get_block(&block_hash))?;
+ 
     Ok(init_program(
         &program,
         &bitcoind_client,
         last_block,
-        tip.height as u32,
+        block_height,
         deposit_pubkey_hash,
     )
     .await?)
@@ -323,7 +352,7 @@ pub async fn run_submit_block_fork(
     let block_hash = tokio::task::block_in_place(|| bitcoind_client.get_block_hash(block_number))?;
     let block = tokio::task::block_in_place(|| bitcoind_client.get_block(&block_hash))?;
 
-    let mut prev_commited_header = tokio::task::block_in_place(|| {
+    let prev_commited_header = tokio::task::block_in_place(|| {
         reconstruct_commited_header(
             &bitcoind_client,
             &block.header.prev_blockhash,
@@ -331,8 +360,6 @@ pub async fn run_submit_block_fork(
             main_state_data.last_diff_adjustment,
         )
     })?;
-
-    prev_commited_header.chain_work = main_state_data.chain_work;
 
     Ok(submit_block_fork(
         &program,

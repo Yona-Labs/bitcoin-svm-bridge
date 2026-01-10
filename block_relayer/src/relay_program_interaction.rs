@@ -1,6 +1,5 @@
 use crate::merkle::Proof;
 use anchor_client::anchor_lang::prelude::{AccountDeserialize, AccountMeta};
-use btc_relay::utils::{get_difficulty, nbits_to_target};
 use anchor_client::solana_sdk::compute_budget::ComputeBudgetInstruction;
 use anchor_client::solana_sdk::pubkey::Pubkey;
 use anchor_client::solana_sdk::signature::{Keypair, Signature};
@@ -30,46 +29,6 @@ use serde::Serialize;
 use std::fmt;
 use std::sync::Arc;
 
-
-// u256 big-endian: lhs -= rhs
-fn sub_in_place(lhs: &mut [u8; 32], rhs: [u8; 32]) {
-    let mut borrow: i16 = 0;
-    for i in (0..32).rev() {
-        let a = lhs[i] as i16 - borrow;
-        let b = rhs[i] as i16;
-        let mut v = a - b;
-        if v < 0 {
-            v += 256;
-            borrow = 1;
-        } else {
-            borrow = 0;
-        }
-        lhs[i] = v as u8;
-    }
-    debug_assert!(borrow == 0, "chain_work underflow");
-}
-
-fn chain_work_at_height(
-    bitcoind_client: &BitcoinRpcClient,
-    yona_tip_height: u32,
-    yona_tip_chain_work: [u8; 32],
-    target_height: u32,
-) -> Result<[u8; 32], BtcRpcError> {
-    if target_height > yona_tip_height {
-        return Ok([0; 32]);
-    }
-
-    let mut cw = yona_tip_chain_work;
-    // cw(target) = cw(tip) - sum_{h=target+1..tip} diff(h)
-    for h in (target_height + 1..=yona_tip_height).rev() {
-        let bh = bitcoind_client.get_block_hash(h as u64)?;
-        let hdr = bitcoind_client.get_block_header(&bh)?;
-        let diff = get_difficulty(nbits_to_target(hdr.bits.to_consensus()));
-        sub_in_place(&mut cw, diff);
-    }
-    Ok(cw)
-}
-
 pub(crate) fn reconstruct_commited_header(
     bitcoind_client: &BitcoinRpcClient,
     hash: &BlockHash,
@@ -82,8 +41,8 @@ pub(crate) fn reconstruct_commited_header(
     let mut prev_block_timestamps = [0; 10];
     for i in 0..10 {
         let prev_block_hash = bitcoind_client.get_block_hash(height as u64 - i as u64 - 1)?;
-        let block = bitcoind_client.get_block(&prev_block_hash)?;
-        prev_block_timestamps[9 - i] = block.header.time;
+        let hdr = bitcoind_client.get_block_header(&prev_block_hash)?;
+        prev_block_timestamps[9 - i] = hdr.time;
     }
 
     Ok(CommittedBlockHeader {
@@ -119,6 +78,21 @@ impl From<BtcRpcError> for InitError {
     }
 }
 
+
+// chainwork из bitcoind: big-endian bytes
+fn chainwork_bytes_to_u256_be(chainwork: &[u8]) -> [u8; 32] {
+    let mut out = [0u8; 32];
+    if chainwork.is_empty() {
+        return out;
+    }
+    let n = chainwork.len().min(32);
+    out[32 - n..].copy_from_slice(&chainwork[chainwork.len() - n..]);
+    out
+}
+
+
+
+
 pub async fn init_program(
     program: &Program<Arc<Keypair>>,
     bitcoind_client: &BitcoinRpcClient,
@@ -146,8 +120,8 @@ pub async fn init_program(
         let prev_block_hash = tokio::task::block_in_place(|| {
             bitcoind_client.get_block_hash(block_height as u64 - i as u64 - 1)
         })?;
-        let block = tokio::task::block_in_place(|| bitcoind_client.get_block(&prev_block_hash))?;
-        prev_block_timestamps[9 - i] = block.header.time;
+        let hdr = bitcoind_client.get_block_header(&prev_block_hash)?;
+        prev_block_timestamps[9 - i] = hdr.time;
     }
 
     let (header_topic, _) =
@@ -164,6 +138,19 @@ pub async fn init_program(
         &anchor_spl::metadata::ID,
     );
 
+    let block_info = tokio::task::block_in_place(|| bitcoind_client.get_block_info(&block.block_hash()))?;
+    let chain_work = chainwork_bytes_to_u256_be(&block_info.chainwork);
+
+    info!("chainwork as lossy string = {}", String::from_utf8_lossy(&block_info.chainwork));
+    info!("chainwork bytes head = {:?}", &block_info.chainwork.get(..16));
+
+    let last_adj_height = block_height - (block_height % 2016);
+    let last_adj_hash = tokio::task::block_in_place(|| bitcoind_client.get_block_hash(last_adj_height as u64))?;
+    let last_adj_hdr = tokio::task::block_in_place(|| bitcoind_client.get_block_header(&last_adj_hash))?;
+    let last_diff_adjustment = last_adj_hdr.time;
+
+
+
     let res = program
         .request()
         .accounts(Initialize {
@@ -178,8 +165,8 @@ pub async fn init_program(
         .args(InitializeInstruction {
             data: yona_block_header,
             block_height,
-            chain_work: [0; 32],
-            last_diff_adjustment: yona_block_header.timestamp,
+            chain_work,
+            last_diff_adjustment,
             prev_block_timestamps,
             deposit_pubkey_hash,
         })
@@ -233,7 +220,7 @@ pub(crate) async fn submit_block(
         Pubkey::find_program_address(&[b"header", block_hash.as_slice()], &program.id());
 
     let header_account = AccountMeta::new(header_topic, false);
-    
+
     let res = program
         .request()
         .accounts(SubmitBlockHeaders {
@@ -308,7 +295,6 @@ pub enum RelayTxError {
     BitcoinRpc(BtcRpcError),
     TxIsNotIncludedToBlock,
     CouldNotFindTxidInBlock,
-    TxBlockHeaderNotRelayedYet,
 }
 
 impl From<AnchorClientError> for RelayTxError {
@@ -359,27 +345,22 @@ pub async fn relay_tx(
 
     let tx_height = block_info.height as u32;
     if tx_height > main_state_data.block_height {
-        // Заголовок блока с этой транзакцией ещё не зарелеен в Yona → commitment == 0 → будет PrevBlockCommitment
-        return Err(RelayTxError::TxBlockHeaderNotRelayedYet);
+        return Err(RelayTxError::TxIsNotIncludedToBlock);
     }
+
     let client_clone = bitcoind_client.clone();
-    let commited_header = tokio::task::spawn_blocking(move || {
-        let mut ch = reconstruct_commited_header(
+    let mut commited_header = tokio::task::spawn_blocking(move || {
+        reconstruct_commited_header(
             &client_clone,
             &block_hash,
-            tx_height,
+            block_info.height as u32,
             main_state_data.last_diff_adjustment,
-        )?;
-        ch.chain_work = chain_work_at_height(
-            &client_clone,
-            main_state_data.block_height,
-            main_state_data.chain_work,
-            tx_height,
-        )?;
-        Ok::<_, BtcRpcError>(ch)
+        )
     })
     .await
     .expect("no panic")?;
+
+    commited_header.chain_work = chainwork_bytes_to_u256_be(&block_info.chainwork);
 
     let tx_pos = block_info
         .tx
