@@ -21,6 +21,13 @@ impl BlockHeader {
     }
 }
 
+#[derive(Debug, Clone, AnchorSerialize, AnchorDeserialize, Copy, Eq, PartialEq)]
+pub struct TxProofHeader {
+    pub blockheight: u32,
+    pub merkle_root: [u8; 32],
+    pub commit_hash: [u8; 32],
+}
+
 //Struct representing committed block header - bitcoin block header with additional data
 #[derive(Debug, Clone, AnchorSerialize, AnchorDeserialize, Copy)]
 pub struct CommittedBlockHeader {

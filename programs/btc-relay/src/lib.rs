@@ -435,7 +435,7 @@ pub mod btc_relay {
         confirmations: u32,
         tx_index: u32,
         reversed_merkle_proof: Vec<[u8; 32]>,
-        commited_header: CommittedBlockHeader,
+        proof_header: TxProofHeader,
     ) -> Result<()> {
         require!(
             matches!(
@@ -445,7 +445,7 @@ pub mod btc_relay {
             RelayErrorCode::DepositTxAlreadyVerified
         );
 
-        let block_height = commited_header.blockheight;
+        let block_height = proof_header.blockheight;
 
         let main_state = ctx.accounts.main_state.load()?;
 
@@ -454,9 +454,8 @@ pub mod btc_relay {
             RelayErrorCode::BlockConfirmations
         );
 
-        let commit_hash = commited_header.get_commit_hash()?;
         require!(
-            commit_hash == main_state.get_commitment(block_height),
+            proof_header.commit_hash == main_state.get_commitment(block_height),
             RelayErrorCode::PrevBlockCommitment
         );
 
@@ -484,7 +483,7 @@ pub mod btc_relay {
         let computed_merkle = utils::compute_merkle(&tx_id, tx_index, reversed_merkle_proof);
 
         require!(
-            computed_merkle == commited_header.header.merkle_root,
+            computed_merkle == proof_header.merkle_root,
             RelayErrorCode::MerkleRoot
         );
 
@@ -551,9 +550,9 @@ pub mod btc_relay {
         confirmations: u32,
         tx_index: u32,
         reversed_merkle_proof: Vec<[u8; 32]>,
-        commited_header: CommittedBlockHeader,
+        proof_header: TxProofHeader,
     ) -> Result<()> {
-        let block_height = commited_header.blockheight;
+        let block_height = proof_header.blockheight;
 
         let main_state = ctx.accounts.main_state.load()?;
 
@@ -562,16 +561,16 @@ pub mod btc_relay {
             RelayErrorCode::BlockConfirmations
         );
 
-        let commit_hash = commited_header.get_commit_hash()?;
         require!(
-            commit_hash == main_state.get_commitment(block_height),
+            proof_header.commit_hash == main_state.get_commitment(block_height),
             RelayErrorCode::PrevBlockCommitment
         );
+
 
         let computed_merkle = utils::compute_merkle(&tx_id, tx_index, reversed_merkle_proof);
 
         require!(
-            computed_merkle == commited_header.header.merkle_root,
+            computed_merkle == proof_header.merkle_root,
             RelayErrorCode::MerkleRoot
         );
 

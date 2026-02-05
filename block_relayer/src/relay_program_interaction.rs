@@ -14,6 +14,7 @@ use btc_relay::accounts::{
     BridgeWithdraw, FinalizeTx, InitBigTxVerify, InitWbtcMeta, Initialize, StoreTxBytes,
     SubmitBlockHeaders, SubmitShortForkHeaders, VerifyTransaction,
 };
+
 use btc_relay::config::WBTC_MINT_SEED;
 use btc_relay::instruction::{
     BridgeWithdraw as BridgeWithdrawInstruction, FinalizeTxProcessing,
@@ -23,7 +24,7 @@ use btc_relay::instruction::{
     SubmitShortForkHeaders as SubmitShortForkHeadersIx, VerifySmallTx as VerifySmallTxInstruction,
 };
 use btc_relay::state::{DepositTxState as ProgramDepositTxState, MainState, TxState};
-use btc_relay::structs::{BlockHeader, CommittedBlockHeader};
+use btc_relay::structs::{BlockHeader, CommittedBlockHeader, TxProofHeader};
 use log::{debug, info};
 use serde::Serialize;
 use std::fmt;
@@ -295,6 +296,7 @@ pub enum RelayTxError {
     BitcoinRpc(BtcRpcError),
     TxIsNotIncludedToBlock,
     CouldNotFindTxidInBlock,
+    TxIsNotIncludedToBlockBuffer
 }
 
 impl From<AnchorClientError> for RelayTxError {
@@ -335,7 +337,7 @@ pub async fn relay_tx(
 
     let block_hash = match transaction.blockhash {
         Some(hash) => hash,
-        _ => return Err(RelayTxError::TxIsNotIncludedToBlock),
+        None => return Err(RelayTxError::TxIsNotIncludedToBlock),
     };
 
     let client_clone = bitcoind_client.clone();
@@ -347,34 +349,38 @@ pub async fn relay_tx(
     if tx_height > main_state_data.block_height {
         return Err(RelayTxError::TxIsNotIncludedToBlock);
     }
+    if tx_height < main_state_data.start_height {
+        return Err(RelayTxError::TxIsNotIncludedToBlockBuffer);
+    }
 
-    let client_clone = bitcoind_client.clone();
-    let mut commited_header = tokio::task::spawn_blocking(move || {
-        reconstruct_commited_header(
-            &client_clone,
-            &block_hash,
-            block_info.height as u32,
-            main_state_data.last_diff_adjustment,
-        )
-    })
-    .await
-    .expect("no panic")?;
+    let commit_hash = main_state_data.get_commitment(tx_height);
 
-    commited_header.chain_work = chainwork_bytes_to_u256_be(&block_info.chainwork);
+    let merkle_root = {
+        block_info.merkleroot.to_byte_array()
+    };
+
+    let proof_header = TxProofHeader {
+        blockheight: tx_height,
+        merkle_root,
+        commit_hash,
+    };
 
     let tx_pos = block_info
         .tx
         .iter()
         .position(|in_block| *in_block == tx_id)
         .ok_or(RelayTxError::CouldNotFindTxidInBlock)?;
+
     let reversed_merkle_proof = Proof::create(&block_info.tx, tx_pos).to_reversed_vec();
 
     let tx_id = transaction.txid.to_byte_array();
     let (tx_account, _) = Pubkey::find_program_address(&[tx_id.as_slice()], &program.id());
 
     if transaction.hex.len() + 32 * reversed_merkle_proof.len() > 800 {
+        // big-tx flow
         program
             .request()
+            .instruction(ComputeBudgetInstruction::set_compute_unit_limit(500_000))
             .accounts(InitBigTxVerify {
                 signer: program.payer(),
                 tx_account,
@@ -383,11 +389,11 @@ pub async fn relay_tx(
             })
             .args(InitBigTxVerifyInstruction {
                 tx_id,
+                tx_size: transaction.hex.len() as u64,
                 confirmations: 1,
                 tx_index: tx_pos as u32,
-                commited_header,
                 reversed_merkle_proof,
-                tx_size: transaction.hex.len() as u64,
+                proof_header,
             })
             .send()
             .await?;
@@ -407,7 +413,7 @@ pub async fn relay_tx(
                 .await?;
         }
 
-        let res = program
+        let sig = program
             .request()
             .instruction(ComputeBudgetInstruction::set_compute_unit_limit(500_000))
             .accounts(FinalizeTx {
@@ -425,10 +431,12 @@ pub async fn relay_tx(
             .send()
             .await?;
 
-        Ok(res)
+        Ok(sig)
     } else {
-        let res = program
+        // small-tx flow
+        let sig = program
             .request()
+            .instruction(ComputeBudgetInstruction::set_compute_unit_limit(500_000))
             .accounts(VerifyTransaction {
                 signer: program.payer(),
                 main_state,
@@ -445,13 +453,13 @@ pub async fn relay_tx(
                 tx_bytes: transaction.hex,
                 confirmations: 1,
                 tx_index: tx_pos as u32,
-                commited_header,
                 reversed_merkle_proof,
+                proof_header,
             })
             .send()
             .await?;
 
-        Ok(res)
+        Ok(sig)
     }
 }
 
