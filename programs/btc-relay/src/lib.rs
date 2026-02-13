@@ -655,7 +655,7 @@ pub mod btc_relay {
         // check that valid bitcoin address is provided
         Address::from_str(&bitcoin_address)
             .map_err(|_| error!(RelayErrorCode::InvalidBitcoinAddress))?
-            .require_network(Network::Regtest)
+            .require_network(Network::Bitcoin)
             .map_err(|_| error!(RelayErrorCode::InvalidBitcoinAddress))?;
 
         burn(

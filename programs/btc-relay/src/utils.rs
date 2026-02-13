@@ -342,7 +342,7 @@ pub fn bridge_mint_amount(
 ) -> u64 {
     let expected_script = bridge_deposit_script(solana_pub, bridge_pubkey_hash);
     let expected_script_pubkey =
-        Address::p2wsh(expected_script.as_script(), Network::Regtest).script_pubkey();
+        Address::p2wsh(expected_script.as_script(), Network::Bitcoin).script_pubkey();
 
     bitcoin_tx
         .output
