@@ -25,9 +25,17 @@ services:
     volumes:
       - ./config/config.toml:/app/config.toml
       - ./config/yona-keypair.json:/app/yona-keypair.json
+      - type: volume
+        source: bitcoin-svm-bridge_database
+        target: /app/bridge.db
+        volume:
+          subpath: bridge.db
     ports:
       - 127.0.0.1:8199:8199
 
 networks:
   bitcoin-svm-bridge:
+    external: true
+volumes:
+  bitcoin-svm-bridge_database:
     external: true
