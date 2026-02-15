@@ -18,7 +18,7 @@ services:
     <<: [ *common-network, *common-dns, *common-logging ]
     hostname: block-relayer
     image: ${BLOCK_RELAYER_IMAGE}
-    command: [ "relay", "${BLOCK_RELAYER_SECRET_KEY}", "--init-height", "8" ]
+    command: [ "relay", "${BLOCK_RELAYER_SECRET_KEY}" ]
     environment:
       RUST_BACKTRACE: ${BLOCK_RELAYER_RUST_BACKTRACE}
       RUST_LOG: ${BLOCK_RELAYER_RUST_LOG}
