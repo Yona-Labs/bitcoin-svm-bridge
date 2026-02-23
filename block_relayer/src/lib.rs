@@ -468,6 +468,7 @@ pub async fn process_bridge_events(
             {
                 if bytes.starts_with(&DepositTxVerified::DISCRIMINATOR) {
                     let event = DepositTxVerified::try_from_slice(&bytes[8..]).unwrap();
+                    info!("[BRIDGE EVENT] DEPOSIT sol_sig={} btc_txid={}", signature, Txid::from_byte_array(event.tx_id));
                     let bitcoin_tx = bitcoin_rpc_client
                         .get_raw_transaction(&Txid::from_byte_array(event.tx_id), None)
                         .expect("get_raw_transaction");
@@ -499,6 +500,11 @@ pub async fn process_bridge_events(
                 } else if bytes.starts_with(&Withdrawal::DISCRIMINATOR) {
                     let event = Withdrawal::try_from_slice(&bytes[8..]).unwrap();
                     info!("Got withdrawal event {event:?}");
+                    info!("[BRIDGE EVENT] WITHDRAW sol_sig={} btc_addr={} gross_sats={}", signature, event.bitcoin_address, event.amount);
+                    if event.amount < 1546 {
+                        error!("Skip withdrawal: amount {} too small (min gross is 1546 sats)", event.amount);
+                        continue;
+                    } 
                     let available_utxos = match Utxo::get_all_utxos(&pool).await {
                         Ok(utxos) => utxos,
                         Err(e) => {
@@ -539,6 +545,15 @@ pub async fn process_bridge_events(
                         if collected_amount >= event.amount + 546 {
                             break;
                         }
+                    }
+
+                    if collected_amount < event.amount + 546 {
+                        error!(
+                            "Skip withdrawal: insufficient UTXOs, collected={}, need_at_least={}",
+                            collected_amount,
+                            event.amount + 546
+                        );
+                        continue;
                     }
 
                     let change = collected_amount - event.amount;
