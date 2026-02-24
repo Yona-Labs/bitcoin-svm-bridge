@@ -652,6 +652,7 @@ pub mod btc_relay {
         amount: u64,
         bitcoin_address: String,
     ) -> Result<()> {
+        require!(amount >= 1546, RelayErrorCode::WithdrawalAmountTooSmall);
         // check that valid bitcoin address is provided
         Address::from_str(&bitcoin_address)
             .map_err(|_| error!(RelayErrorCode::InvalidBitcoinAddress))?

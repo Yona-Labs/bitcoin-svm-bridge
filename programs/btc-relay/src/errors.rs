@@ -42,4 +42,6 @@ pub enum RelayErrorCode {
     InvalidBitcoinAddress,
     #[msg("Deposit transaction has been already verified!")]
     DepositTxAlreadyVerified,
+    #[msg("Withdrawal amount is too small (minimum gross amount is 1546 sats).")]
+    WithdrawalAmountTooSmall,
 }
