@@ -65,6 +65,12 @@ FROM rust:1.91-slim-trixie AS app_block_relayer
 
 WORKDIR /app
 
+RUN apt-get update -qq \
+    && apt-get upgrade -y -q \
+    && apt-get install --no-install-recommends -y \
+       sqlite3 \
+    && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*
+
 COPY --from=builder /build/block_relayer/target/release/block_relayer /app/block_relayer
 #COPY --from=builder /workdir/programs/btc-relay /app/bin/btc_relay
 
