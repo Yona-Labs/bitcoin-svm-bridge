@@ -1,11 +1,19 @@
 use crate::merkle::Proof;
+use anchor_client::anchor_lang::{InstructionData, ToAccountMetas};
 use anchor_client::anchor_lang::prelude::{AccountDeserialize, AccountMeta};
 use anchor_client::solana_sdk::compute_budget::ComputeBudgetInstruction;
+use anchor_client::solana_sdk::instruction::Instruction;
+use anchor_client::solana_sdk::message::{Message, VersionedMessage};
 use anchor_client::solana_sdk::pubkey::Pubkey;
-use anchor_client::solana_sdk::signature::{Keypair, Signature};
+use anchor_client::solana_sdk::signature::{Keypair,
+     Signature
+    };
 use anchor_client::ClientError as AnchorClientError;
 use anchor_client::Program;
+use anchor_client::solana_sdk::transaction::VersionedTransaction;
 use anchor_spl::associated_token::get_associated_token_address;
+use base64::Engine;
+use base64::prelude::BASE64_STANDARD;
 use bitcoin::hashes::Hash;
 use bitcoin::hex::DisplayHex;
 use bitcoin::{Block, BlockHash, Txid};
@@ -29,6 +37,9 @@ use log::{debug, info};
 use serde::Serialize;
 use std::fmt;
 use std::sync::Arc;
+
+const MAX_RAW_TX: usize = 1232;
+const MAX_B64_TX: usize = 1644;
 
 pub(crate) fn reconstruct_commited_header(
     bitcoind_client: &BitcoinRpcClient,
@@ -311,6 +322,67 @@ impl From<BtcRpcError> for RelayTxError {
     }
 }
 
+fn estimate_vtx_sizes(payer: Pubkey, ixs: &[Instruction]) -> (usize, usize, usize) {
+    let msg = Message::new(ixs, Some(&payer));
+    let vmsg = VersionedMessage::Legacy(msg);
+
+    let sig_count = vmsg.header().num_required_signatures as usize;
+    let vtx = VersionedTransaction {
+        signatures: vec![Signature::default(); sig_count],
+        message: vmsg,
+    };
+
+    let raw = bincode::serialize(&vtx).expect("serialize vtx");
+    let raw_len = raw.len();
+    let b64_len = BASE64_STANDARD.encode(&raw).len();
+
+    let keys = match &vtx.message {
+        VersionedMessage::Legacy(m) => m.account_keys.len(),
+        VersionedMessage::V0(m) => m.account_keys.len(),
+    };
+
+    (raw_len, b64_len, keys)
+}
+
+fn fits_tx(payer: Pubkey, ixs: &[Instruction]) -> bool {
+    let (raw_len, b64_len, _) = estimate_vtx_sizes(payer, ixs);
+    raw_len <= MAX_RAW_TX && b64_len <= MAX_B64_TX
+}
+
+fn max_store_chunk_size(
+    program_id: Pubkey,
+    payer: Pubkey,
+    tx_account: Pubkey,
+    tx_id: [u8; 32],
+    max_try: usize,
+) -> usize {
+    let mut lo = 0usize;
+    let mut hi = max_try;
+
+    while lo < hi {
+        let mid = (lo + hi + 1) / 2;
+
+        let store_ix = Instruction {
+            program_id,
+            accounts: StoreTxBytes { signer: payer, tx_account }.to_account_metas(None),
+            data: StoreTxBytesInstruction {
+                tx_id,
+                bytes: vec![0u8; mid],
+            }
+            .data(),
+        };
+
+        if fits_tx(payer, &[store_ix]) {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
+    }
+
+    lo
+}
+
+
 pub async fn relay_tx(
     program: &Program<Arc<Keypair>>,
     main_state: Pubkey,
@@ -372,71 +444,61 @@ pub async fn relay_tx(
         .ok_or(RelayTxError::CouldNotFindTxidInBlock)?;
 
     let reversed_merkle_proof = Proof::create(&block_info.tx, tx_pos).to_reversed_vec();
+    let tx_bytes_len = transaction.hex.len();
+    let proof_len = reversed_merkle_proof.len();
+    let proof_bytes = 32 * proof_len;
+
+    info!(
+        "[RELAY_TX INPUT] tx_bytes={} proof_len={} proof_bytes={} sum(tx+proof)={}",
+        tx_bytes_len,
+        proof_len,
+        proof_bytes,
+        tx_bytes_len + proof_bytes
+    );
 
     let tx_id = transaction.txid.to_byte_array();
     let (tx_account, _) = Pubkey::find_program_address(&[tx_id.as_slice()], &program.id());
 
-    if transaction.hex.len() + 32 * reversed_merkle_proof.len() > 800 {
-        // big-tx flow
-        program
-            .request()
-            .instruction(ComputeBudgetInstruction::set_compute_unit_limit(500_000))
-            .accounts(InitBigTxVerify {
-                signer: program.payer(),
-                tx_account,
-                system_program: anchor_client::solana_sdk::system_program::ID,
-                main_state,
-            })
-            .args(InitBigTxVerifyInstruction {
-                tx_id,
-                tx_size: transaction.hex.len() as u64,
-                confirmations: 1,
-                tx_index: tx_pos as u32,
-                reversed_merkle_proof,
-                proof_header,
-            })
-            .send()
-            .await?;
+    let cu_ix = ComputeBudgetInstruction::set_compute_unit_limit(500_000);
 
-        for chunk in transaction.hex.chunks(800) {
-            program
-                .request()
-                .accounts(StoreTxBytes {
-                    signer: program.payer(),
-                    tx_account,
-                })
-                .args(StoreTxBytesInstruction {
-                    tx_id,
-                    bytes: chunk.to_vec(),
-                })
-                .send()
-                .await?;
+    let verify_ix = Instruction {
+        program_id: program.id(),
+        accounts: VerifyTransaction {
+            signer: program.payer(),
+            main_state,
+            tx_account,
+            wbtc_receiver_sol,
+            wbtc_mint,
+            wbtc_receiver,
+            associated_token_program: anchor_spl::associated_token::ID,
+            token_program: anchor_spl::token::ID,
+            system_program: anchor_client::solana_sdk::system_program::ID,
         }
+        .to_account_metas(None),
+        data: VerifySmallTxInstruction {
+            tx_id,
+            tx_bytes: transaction.hex.clone(),
+            confirmations: 1,
+            tx_index: tx_pos as u32,
+            reversed_merkle_proof: reversed_merkle_proof.clone(),
+            proof_header,
+        }
+        .data(),
+    };
 
-        let sig = program
-            .request()
-            .instruction(ComputeBudgetInstruction::set_compute_unit_limit(500_000))
-            .accounts(FinalizeTx {
-                signer: program.payer(),
-                tx_account,
-                wbtc_receiver_sol,
-                wbtc_mint,
-                wbtc_receiver,
-                associated_token_program: anchor_spl::associated_token::ID,
-                main_state,
-                token_program: anchor_spl::token::ID,
-                system_program: anchor_client::solana_sdk::system_program::ID,
-            })
-            .args(FinalizeTxProcessing { tx_id })
-            .send()
-            .await?;
+    let (small_raw, small_b64, small_keys) = estimate_vtx_sizes(program.payer(), &[cu_ix.clone(), verify_ix.clone()]);
+    info!(
+        "[SIZE CHECK] small raw={} (max {}) b64={} (max {}) keys={}",
+        small_raw, MAX_RAW_TX, small_b64, MAX_B64_TX, small_keys
+    );
 
-        Ok(sig)
-    } else {
+    let small_fits = small_raw <= MAX_RAW_TX && small_b64 <= MAX_B64_TX;
+
+    if small_fits {
         // small-tx flow
         let sig = program
             .request()
-            .instruction(ComputeBudgetInstruction::set_compute_unit_limit(500_000))
+            .instruction(cu_ix)
             .accounts(VerifyTransaction {
                 signer: program.payer(),
                 main_state,
@@ -456,6 +518,99 @@ pub async fn relay_tx(
                 reversed_merkle_proof,
                 proof_header,
             })
+            .send()
+            .await?;
+
+        Ok(sig)
+    } else {
+        // big-tx flow
+        let init_ix = Instruction {
+            program_id: program.id(),
+            accounts: InitBigTxVerify {
+                signer: program.payer(),
+                tx_account,
+                system_program: anchor_client::solana_sdk::system_program::ID,
+                main_state,
+            }
+            .to_account_metas(None),
+            data: InitBigTxVerifyInstruction {
+                tx_id,
+                tx_size: transaction.hex.len() as u64,
+                confirmations: 1,
+                tx_index: tx_pos as u32,
+                reversed_merkle_proof: reversed_merkle_proof.clone(),
+                proof_header,
+            }
+            .data(),
+        };
+
+        let init_fits_with_cu = fits_tx(program.payer(), &[cu_ix.clone(), init_ix.clone()]);
+        if !init_fits_with_cu {
+            let (r, b, k) = estimate_vtx_sizes(program.payer(), &[cu_ix.clone(), init_ix.clone()]);
+            return Err(RelayTxError::Anchor(AnchorClientError::from(std::io::Error::other(
+                format!("big-init too large even with CU: raw={r} b64={b} keys={k}"),
+            ))));
+        }
+
+        program
+            .request()
+            .instruction(cu_ix.clone())
+            .accounts(InitBigTxVerify {
+                signer: program.payer(),
+                tx_account,
+                system_program: anchor_client::solana_sdk::system_program::ID,
+                main_state,
+            })
+            .args(InitBigTxVerifyInstruction {
+                tx_id,
+                tx_size: transaction.hex.len() as u64,
+                confirmations: 1,
+                tx_index: tx_pos as u32,
+                reversed_merkle_proof,
+                proof_header,
+            })
+            .send()
+            .await?;
+
+        let chunk_size = max_store_chunk_size(program.id(), program.payer(), tx_account, tx_id,800);
+        if chunk_size == 0 {
+            return Err(RelayTxError::Anchor(AnchorClientError::from(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "could not find any StoreTxBytes chunk size that fits into tx limit",
+            ))));
+        }
+        info!("[BIG FLOW] using chunk_size={}", chunk_size);
+
+        for chunk in transaction.hex.chunks(chunk_size) {
+            program
+                .request()
+                .accounts(StoreTxBytes {
+                    signer: program.payer(),
+                    tx_account,
+                })
+                .args(StoreTxBytesInstruction {
+                    tx_id,
+                    bytes: chunk.to_vec(),
+                })
+                .send()
+                .await?;
+        }
+
+        let sig = program
+            .request()
+            .instruction(cu_ix)
+            .accounts(FinalizeTx {
+                signer: program.payer(),
+                tx_account,
+                wbtc_receiver_sol,
+                wbtc_mint,
+                wbtc_receiver,
+                associated_token_program: anchor_spl::associated_token::ID,
+                main_state,
+                token_program: anchor_spl::token::ID,
+                system_program: anchor_client::solana_sdk::system_program::ID,
+            })
+            .args(FinalizeTxProcessing { tx_id })
             .send()
             .await?;
 
