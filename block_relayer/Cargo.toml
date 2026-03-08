@@ -28,6 +28,7 @@ tokio = { version = "1", features = ["rt-multi-thread"] }
 toml = "0.8"
 jsonrpc = { version = "0.18", features = ["minreq_http"] }
 minreq = { version = "2.14.1", features = ["https-rustls-probe"] }
+bincode = "1"
 
 [dev-dependencies]
 bollard = "0.16.1"
