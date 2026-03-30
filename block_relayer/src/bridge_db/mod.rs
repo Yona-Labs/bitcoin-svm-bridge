@@ -5,7 +5,7 @@ use std::str::FromStr;
 mod solana_transaction;
 pub use solana_transaction::*;
 mod utxo;
-pub use utxo::Utxo;
+pub use utxo::{Utxo, UTXO_STATUS_CONFIRMED, UTXO_STATUS_PENDING_CHANGE, UTXO_STATUS_SPENT_PENDING};
 mod withdraw_transaction_info;
 pub use withdraw_transaction_info::WithdrawTransactionInfo;
 
@@ -49,6 +49,8 @@ mod tests {
             yona_address: "yona1234567890".to_string(),
             bridge_pubkey: vec![9, 10, 11, 12],
             redeem_script: vec![13, 14, 15, 16],
+            status: UTXO_STATUS_CONFIRMED.to_string(),
+            spent_by_txid: None,
         };
 
         // Test insert
@@ -84,7 +86,7 @@ mod tests {
         let bitcoin_txid = Txid::from_str(txid_hex).unwrap();
 
         // Test add_new
-        WithdrawTransactionInfo::add_new(&pool, &solana_signature, &bitcoin_txid)
+        WithdrawTransactionInfo::add_new(&pool, &solana_signature, &bitcoin_txid, &[1, 2, 3])
             .await
             .unwrap();
 
@@ -97,5 +99,7 @@ mod tests {
 
         assert_eq!(retrieved_info.solana_tx_signature, solana_signature);
         assert_eq!(retrieved_info.bitcoin_tx_id, bitcoin_txid);
+        assert_eq!(retrieved_info.status, "broadcasted");
+        assert_eq!(retrieved_info.raw_tx, Some(vec![1, 2, 3]));
     }
 }

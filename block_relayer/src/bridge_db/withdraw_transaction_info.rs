@@ -9,6 +9,8 @@ use std::str::FromStr;
 pub struct WithdrawTransactionInfo {
     pub solana_tx_signature: Signature,
     pub bitcoin_tx_id: Txid,
+    pub raw_tx: Option<Vec<u8>>,
+    pub status: String,
 }
 
 impl WithdrawTransactionInfo {
@@ -24,6 +26,8 @@ impl WithdrawTransactionInfo {
         WithdrawTransactionInfo {
             solana_tx_signature,
             bitcoin_tx_id,
+            raw_tx: row.get("raw_tx"),
+            status: row.get("status"),
         }
     }
 
@@ -31,15 +35,17 @@ impl WithdrawTransactionInfo {
         pool: &SqlitePool,
         solana_tx_signature: &Signature,
         bitcoin_tx_id: &Txid,
+        raw_tx: &[u8],
     ) -> Result<(), sqlx::Error> {
-        let query = "INSERT INTO withdraw_transaction_info (solana_tx_signature, bitcoin_tx_id) VALUES (?1, ?2)";
+        let query = "INSERT INTO withdraw_transaction_info (solana_tx_signature, bitcoin_tx_id, raw_tx, status) VALUES (?1, ?2, ?3, ?4)";
 
-        // Convert Txid to byte array
         let txid_bytes = bitcoin_tx_id.to_byte_array();
 
         sqlx::query(query)
             .bind(solana_tx_signature.to_string())
             .bind(&txid_bytes[..])
+            .bind(raw_tx)
+            .bind("broadcasted")
             .execute(pool)
             .await?;
 
@@ -58,5 +64,31 @@ impl WithdrawTransactionInfo {
             .await?;
 
         Ok(row_opt.map(Self::from_row))
+    }
+
+    pub async fn get_non_finalized(
+        pool: &SqlitePool,
+    ) -> Result<Vec<WithdrawTransactionInfo>, sqlx::Error> {
+        let query = "SELECT * FROM withdraw_transaction_info WHERE status != ?1 ORDER BY solana_tx_signature";
+
+        let rows = sqlx::query(query).bind("confirmed").fetch_all(pool).await?;
+
+        Ok(rows.into_iter().map(Self::from_row).collect())
+    }
+
+    pub async fn set_status(
+        pool: &SqlitePool,
+        solana_tx_signature: &Signature,
+        status: &str,
+    ) -> Result<(), sqlx::Error> {
+        let query = "UPDATE withdraw_transaction_info SET status = ?1 WHERE solana_tx_signature = ?2";
+
+        sqlx::query(query)
+            .bind(status)
+            .bind(solana_tx_signature.to_string())
+            .execute(pool)
+            .await?;
+
+        Ok(())
     }
 }
