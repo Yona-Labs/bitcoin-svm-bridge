@@ -751,17 +751,59 @@ pub async fn process_bridge_events(
 #[cfg(test)]
 mod tests {
     use super::finalize_withdrawal_in_db;
+    use super::reconcile_pending_withdrawals;
     use crate::bridge_db::{
         init_test_pool, WithdrawTransactionInfo, Utxo, UTXO_STATUS_CONFIRMED,
         UTXO_STATUS_PENDING_CHANGE, UTXO_STATUS_SPENT_PENDING,
     };
     use anchor_client::solana_sdk::signature::Signature;
+    use bitcoin::amount::Amount;
     use bitcoin::hashes::Hash;
+    use bitcoin::hex::FromHex;
+    use bitcoin::Network;
+    use bitcoincore_rpc::jsonrpc::minreq_http::MinreqHttpTransport;
+    use bitcoincore_rpc::{Client as BitcoinRpcClient, RpcApi};
     use bitcoin::Txid;
+    use std::env;
     use std::str::FromStr;
 
     fn txid_from_hex(hex: &str) -> Txid {
         Txid::from_str(hex).expect("valid txid")
+    }
+
+    fn rpc_client(url: &str, user: &str, password: &str) -> BitcoinRpcClient {
+        let transport = MinreqHttpTransport::builder()
+            .url(url)
+            .map_err(|e| bitcoincore_rpc::Error::JsonRpc(e.into()))
+            .unwrap()
+            .basic_auth(user.to_string(), Some(password.to_string()))
+            .build();
+        BitcoinRpcClient::from_jsonrpc(jsonrpc::Client::with_transport(transport))
+    }
+
+    fn e2e_rpc_env(default_wallet: &str) -> (String, String, String, String) {
+        let base_url = env::var("BITCOIN_E2E_RPC_URL")
+            .expect("BITCOIN_E2E_RPC_URL must point to a running regtest RPC");
+        let rpc_user = env::var("BITCOIN_E2E_RPC_USER").unwrap_or_else(|_| "test".to_string());
+        let rpc_password =
+            env::var("BITCOIN_E2E_RPC_PASSWORD").unwrap_or_else(|_| "test".to_string());
+        let wallet_name =
+            env::var("BITCOIN_E2E_WALLET").unwrap_or_else(|_| default_wallet.to_string());
+
+        (base_url, rpc_user, rpc_password, wallet_name)
+    }
+
+    fn ensure_wallet_loaded(root_client: &BitcoinRpcClient, wallet_name: &str) {
+        if !root_client
+            .list_wallets()
+            .unwrap()
+            .iter()
+            .any(|wallet| wallet == wallet_name)
+        {
+            root_client
+                .create_wallet(wallet_name, None, None, None, None)
+                .unwrap();
+        }
     }
 
     #[tokio::test]
@@ -873,5 +915,240 @@ mod tests {
         let spendable = Utxo::get_spendable_utxos(&pool).await.unwrap();
         assert_eq!(spendable.len(), 1);
         assert_eq!(spendable[0].txid, [1; 32]);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "requires a running bitcoin regtest rpc"]
+    async fn test_regtest_withdrawal_reorg_recovery_without_yona() {
+        let (base_url, rpc_user, rpc_password, wallet_name) =
+            e2e_rpc_env("bridge-test-withdraw-reorg");
+
+        let root_client = rpc_client(&base_url, &rpc_user, &rpc_password);
+        root_client.version().expect("bitcoind rpc ready");
+
+        ensure_wallet_loaded(&root_client, &wallet_name);
+
+        let wallet_client = rpc_client(
+            &format!("{base_url}/wallet/{wallet_name}"),
+            &rpc_user,
+            &rpc_password,
+        );
+
+        let mining_address = wallet_client
+            .get_new_address(None, None)
+            .unwrap()
+            .require_network(Network::Regtest)
+            .unwrap();
+
+        root_client.generate_to_address(101, &mining_address).unwrap();
+
+        let payout_address = wallet_client
+            .get_new_address(None, None)
+            .unwrap()
+            .require_network(Network::Regtest)
+            .unwrap();
+
+        let withdrawal_txid = wallet_client
+            .send_to_address(
+                &payout_address,
+                Amount::from_sat(100_000),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+
+        let raw_tx_hex = root_client
+            .get_raw_transaction_hex(&withdrawal_txid, None)
+            .unwrap();
+        let raw_tx = Vec::<u8>::from_hex(&raw_tx_hex).unwrap();
+
+        let pool = init_test_pool().await;
+        let sol_sig = Signature::new_unique();
+
+        let spent_input = Utxo {
+            txid: [4; 32],
+            vout: 0,
+            amount: 150_000,
+            script_pubkey: vec![1, 2, 3],
+            yona_address: String::new(),
+            bridge_pubkey: vec![],
+            redeem_script: vec![],
+            status: UTXO_STATUS_SPENT_PENDING.to_string(),
+            spent_by_txid: Some(withdrawal_txid.to_byte_array()),
+        };
+        spent_input.insert(&pool).await.unwrap();
+
+        let pending_change = Utxo {
+            txid: withdrawal_txid.to_byte_array(),
+            vout: 1,
+            amount: 49_000,
+            script_pubkey: vec![4, 5, 6],
+            yona_address: String::new(),
+            bridge_pubkey: vec![],
+            redeem_script: vec![],
+            status: UTXO_STATUS_PENDING_CHANGE.to_string(),
+            spent_by_txid: None,
+        };
+        pending_change.insert(&pool).await.unwrap();
+
+        WithdrawTransactionInfo::add_new(&pool, &sol_sig, &withdrawal_txid, &raw_tx)
+            .await
+            .unwrap();
+
+        reconcile_pending_withdrawals(&pool, &root_client, 2).await;
+        let before_mining = WithdrawTransactionInfo::get_by_solana_signature(&pool, &sol_sig)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(before_mining.status, "broadcasted");
+
+        let stale_block = root_client.generate_to_address(1, &mining_address).unwrap()[0];
+        reconcile_pending_withdrawals(&pool, &root_client, 2).await;
+        let after_one_conf = WithdrawTransactionInfo::get_by_solana_signature(&pool, &sol_sig)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(after_one_conf.status, "broadcasted");
+
+        root_client.invalidate_block(&stale_block).unwrap();
+        reconcile_pending_withdrawals(&pool, &root_client, 2).await;
+
+        let after_reorg = WithdrawTransactionInfo::get_by_solana_signature(&pool, &sol_sig)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(after_reorg.status, "broadcasted");
+        assert_eq!(
+            Utxo::get_utxo(&pool, &[4; 32], 0)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            UTXO_STATUS_SPENT_PENDING
+        );
+        assert_eq!(
+            Utxo::get_utxo(&pool, &withdrawal_txid.to_byte_array(), 1)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            UTXO_STATUS_PENDING_CHANGE
+        );
+
+        // After the reorg the relayer must not finalize the withdrawal.
+        // The raw tx stays journaled, inputs remain reserved, and change is not promoted.
+        // Finalization on canonical confirmations is covered separately by the deterministic
+        // DB-level test `test_finalize_withdrawal_in_db_promotes_change_and_removes_spent_inputs`.
+        let raw_tx_still_present = root_client
+            .get_raw_transaction_info(&withdrawal_txid, None)
+            .is_ok();
+        if !raw_tx_still_present {
+            root_client.send_raw_transaction(&raw_tx).unwrap();
+        }
+
+        let still_pending = WithdrawTransactionInfo::get_by_solana_signature(&pool, &sol_sig)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(still_pending.status, "broadcasted");
+        assert_eq!(
+            Utxo::get_utxo(&pool, &[4; 32], 0)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            UTXO_STATUS_SPENT_PENDING
+        );
+        assert_eq!(
+            Utxo::get_utxo(&pool, &withdrawal_txid.to_byte_array(), 1)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            UTXO_STATUS_PENDING_CHANGE
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "requires a running bitcoin regtest rpc"]
+    async fn test_regtest_deposit_confirmation_depth_with_multiple_txs_in_one_block() {
+        let (base_url, rpc_user, rpc_password, wallet_name) =
+            e2e_rpc_env("bridge-test-deposit-depth");
+
+        let root_client = rpc_client(&base_url, &rpc_user, &rpc_password);
+        root_client.version().expect("bitcoind rpc ready");
+        ensure_wallet_loaded(&root_client, &wallet_name);
+
+        let wallet_client = rpc_client(
+            &format!("{base_url}/wallet/{wallet_name}"),
+            &rpc_user,
+            &rpc_password,
+        );
+
+        let mining_address = wallet_client
+            .get_new_address(None, None)
+            .unwrap()
+            .require_network(Network::Regtest)
+            .unwrap();
+        root_client.generate_to_address(101, &mining_address).unwrap();
+
+        let deposit_addr_1 = wallet_client
+            .get_new_address(None, None)
+            .unwrap()
+            .require_network(Network::Regtest)
+            .unwrap();
+        let deposit_addr_2 = wallet_client
+            .get_new_address(None, None)
+            .unwrap()
+            .require_network(Network::Regtest)
+            .unwrap();
+
+        let txid_1 = wallet_client
+            .send_to_address(
+                &deposit_addr_1,
+                Amount::from_sat(50_000),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        let txid_2 = wallet_client
+            .send_to_address(
+                &deposit_addr_2,
+                Amount::from_sat(70_000),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+
+        root_client.generate_to_address(1, &mining_address).unwrap();
+
+        let tx_1_after_first_block = root_client.get_raw_transaction_info(&txid_1, None).unwrap();
+        let tx_2_after_first_block = root_client.get_raw_transaction_info(&txid_2, None).unwrap();
+
+        assert_eq!(tx_1_after_first_block.confirmations.unwrap_or(0), 1);
+        assert_eq!(tx_2_after_first_block.confirmations.unwrap_or(0), 1);
+        assert_eq!(tx_1_after_first_block.blockhash, tx_2_after_first_block.blockhash);
+        assert!(tx_1_after_first_block.confirmations.unwrap_or(0) < 6);
+        assert!(tx_2_after_first_block.confirmations.unwrap_or(0) < 6);
+
+        root_client.generate_to_address(5, &mining_address).unwrap();
+
+        let tx_1_after_six_blocks = root_client.get_raw_transaction_info(&txid_1, None).unwrap();
+        let tx_2_after_six_blocks = root_client.get_raw_transaction_info(&txid_2, None).unwrap();
+
+        assert!(tx_1_after_six_blocks.confirmations.unwrap_or(0) >= 6);
+        assert!(tx_2_after_six_blocks.confirmations.unwrap_or(0) >= 6);
     }
 }
