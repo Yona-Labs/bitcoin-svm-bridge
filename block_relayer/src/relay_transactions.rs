@@ -31,6 +31,7 @@ pub struct RelayTransactionsState {
     pub sqlite_pool: SqlitePool,
     pub deposit_pubkey_hash: [u8; 20],
     pub main_state: Pubkey,
+    pub btc_deposit_confirmations: u32,
 }
 
 #[derive(Deserialize)]
@@ -58,6 +59,7 @@ async fn relay_tx_web_api(
         data.bitcoin_rpc_client.clone(),
         tx_id,
         mint_receiver,
+        data.btc_deposit_confirmations,
     )
     .await;
 
@@ -217,6 +219,7 @@ pub async fn relay_transactions(
         main_state,
         deposit_pubkey_hash,
         sqlite_pool,
+        btc_deposit_confirmations: config.btc_deposit_confirmations,
     });
 
     // Start HTTP server

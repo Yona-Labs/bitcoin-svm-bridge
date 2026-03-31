@@ -6,7 +6,7 @@ pub mod relay_transactions;
 
 use crate::bridge_db::{
     insert_solana_transaction, set_transaction_processed, solana_transaction_processed,
-    WithdrawTransactionInfo,
+    WithdrawTransactionInfo, Utxo, UTXO_STATUS_CONFIRMED, UTXO_STATUS_PENDING_CHANGE,
 };
 use crate::config::RelayConfig;
 use crate::relay_program_interaction::*;
@@ -21,6 +21,7 @@ use anchor_client::{
 };
 use base64::Engine;
 use bitcoin::absolute::LockTime;
+use bitcoin::consensus::serialize;
 use bitcoin::hashes::Hash;
 use bitcoin::hex::DisplayHex;
 use bitcoin::key::Secp256k1;
@@ -34,7 +35,6 @@ use bitcoin::{
 use btc_relay::utils::{compute_new_nbits, nbits_to_target};
 use bitcoincore_rpc::jsonrpc::minreq_http::MinreqHttpTransport;
 use bitcoincore_rpc::{Client as BitcoinRpcClient, Error as BtcError, RpcApi};
-use bridge_db::Utxo;
 use btc_relay::events::{DepositTxVerified, StoreHeader, Withdrawal};
 use btc_relay::program::BtcRelay;
 use btc_relay::state::MainState;
@@ -383,6 +383,77 @@ impl From<AnchorClientError> for DepositError {
     }
 }
 
+async fn reconcile_pending_withdrawals(
+    pool: &SqlitePool,
+    bitcoin_rpc_client: &BitcoinRpcClient,
+    required_confirmations: u32,
+) {
+    let pending_withdrawals = match WithdrawTransactionInfo::get_non_finalized(pool).await {
+        Ok(withdrawals) => withdrawals,
+        Err(e) => {
+            error!("Error {e:?} on getting pending withdrawals");
+            return;
+        }
+    };
+
+    for withdrawal in pending_withdrawals {
+        let txid = withdrawal.bitcoin_tx_id;
+
+        match bitcoin_rpc_client.get_raw_transaction_info(&txid, None) {
+            Ok(info) => {
+                let confirmations = info.confirmations.unwrap_or(0);
+                if confirmations >= required_confirmations {
+                    if let Err(e) = finalize_withdrawal_in_db(pool, &withdrawal).await {
+                        error!("Error {e:?} on finalizing confirmed withdrawal");
+                    }
+                }
+            }
+            Err(_) => {
+                let Some(raw_tx) = withdrawal.raw_tx.as_ref() else {
+                    error!(
+                        "Pending withdrawal {} has no raw tx bytes",
+                        withdrawal.solana_tx_signature
+                    );
+                    continue;
+                };
+
+                match bitcoin_rpc_client.send_raw_transaction(
+                    &bitcoin::consensus::deserialize::<Transaction>(raw_tx)
+                        .expect("valid serialized bitcoin tx"),
+                ) {
+                    Ok(rebroadcast_txid) => {
+                        if rebroadcast_txid != txid {
+                            error!(
+                                "Rebroadcast txid mismatch: expected {}, got {}",
+                                txid, rebroadcast_txid
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        error!("Error {e:?} on rebroadcasting pending withdrawal {txid}");
+                    }
+                }
+            }
+        }
+    }
+}
+
+async fn finalize_withdrawal_in_db(
+    pool: &SqlitePool,
+    withdrawal: &WithdrawTransactionInfo,
+) -> Result<(), sqlx::Error> {
+    let txid_bytes = withdrawal.bitcoin_tx_id.to_byte_array();
+
+    Utxo::promote_pending_change(pool, &txid_bytes).await?;
+
+    let spent_inputs = Utxo::get_by_spending_txid(pool, &txid_bytes).await?;
+    for utxo in spent_inputs {
+        Utxo::delete_utxo(pool, &utxo.txid, utxo.vout).await?;
+    }
+
+    WithdrawTransactionInfo::set_status(pool, &withdrawal.solana_tx_signature, "confirmed").await
+}
+
 pub async fn process_bridge_events(
     config: RelayConfig,
     pool: SqlitePool,
@@ -403,6 +474,9 @@ pub async fn process_bridge_events(
         .expect("Couldn't create relay program instance");
 
     loop {
+        reconcile_pending_withdrawals(&pool, &bitcoin_rpc_client, config.btc_withdraw_confirmations)
+            .await;
+
         let config = GetConfirmedSignaturesForAddress2Config {
             before: None,
             until: None,
@@ -491,6 +565,8 @@ pub async fn process_bridge_events(
                                 yona_address: event.wbtc_receiver_sol.to_string(),
                                 bridge_pubkey: vec![],
                                 redeem_script: deposit_script.as_bytes().into(),
+                                status: UTXO_STATUS_CONFIRMED.to_string(),
+                                spent_by_txid: None,
                             };
                             if let Err(e) = utxo.insert(&pool).await {
                                 error!("Error on UTXO insertion {e:?}");
@@ -505,7 +581,7 @@ pub async fn process_bridge_events(
                         error!("Skip withdrawal: amount {} too small (min gross is 1546 sats)", event.amount);
                         continue;
                     } 
-                    let available_utxos = match Utxo::get_all_utxos(&pool).await {
+                    let available_utxos = match Utxo::get_spendable_utxos(&pool).await {
                         Ok(utxos) => utxos,
                         Err(e) => {
                             error!("Error {e:?} on getting utxos");
@@ -626,14 +702,18 @@ pub async fn process_bridge_events(
                     }) {
                         Ok(id) => {
                             info!("Processed bridge withdrawal, Bitcoin tx id {}", id);
-                            WithdrawTransactionInfo::add_new(&pool, &signature, &id)
+                            let raw_tx = serialize(&tx);
+
+                            WithdrawTransactionInfo::add_new(&pool, &signature, &id, &raw_tx)
                                 .await
                                 .expect("WithdrawTransactionInfo::add_new success");
+
                             for input in tx.input.iter() {
-                                Utxo::delete_utxo(
+                                Utxo::mark_spent_pending(
                                     &pool,
                                     &input.previous_output.txid.to_byte_array(),
                                     input.previous_output.vout,
+                                    &id.to_byte_array(),
                                 )
                                 .await
                                 .unwrap();
@@ -647,6 +727,8 @@ pub async fn process_bridge_events(
                                 yona_address: "".into(),
                                 bridge_pubkey: vec![],
                                 redeem_script: vec![],
+                                status: UTXO_STATUS_PENDING_CHANGE.to_string(),
+                                spent_by_txid: None,
                             };
 
                             if let Err(e) = utxo.insert(&pool).await {
@@ -663,5 +745,133 @@ pub async fn process_bridge_events(
         }
 
         tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::finalize_withdrawal_in_db;
+    use crate::bridge_db::{
+        init_test_pool, WithdrawTransactionInfo, Utxo, UTXO_STATUS_CONFIRMED,
+        UTXO_STATUS_PENDING_CHANGE, UTXO_STATUS_SPENT_PENDING,
+    };
+    use anchor_client::solana_sdk::signature::Signature;
+    use bitcoin::hashes::Hash;
+    use bitcoin::Txid;
+    use std::str::FromStr;
+
+    fn txid_from_hex(hex: &str) -> Txid {
+        Txid::from_str(hex).expect("valid txid")
+    }
+
+    #[tokio::test]
+    async fn test_finalize_withdrawal_in_db_promotes_change_and_removes_spent_inputs() {
+        let pool = init_test_pool().await;
+        let spending_txid =
+            txid_from_hex("1111111111111111111111111111111111111111111111111111111111111111");
+        let input_txid =
+            txid_from_hex("2222222222222222222222222222222222222222222222222222222222222222");
+        let sol_sig = Signature::new_unique();
+
+        let spent_input = Utxo {
+            txid: input_txid.to_byte_array(),
+            vout: 0,
+            amount: 50_000,
+            script_pubkey: vec![1, 2, 3],
+            yona_address: String::new(),
+            bridge_pubkey: vec![],
+            redeem_script: vec![],
+            status: UTXO_STATUS_SPENT_PENDING.to_string(),
+            spent_by_txid: Some(spending_txid.to_byte_array()),
+        };
+        spent_input.insert(&pool).await.unwrap();
+
+        let pending_change = Utxo {
+            txid: spending_txid.to_byte_array(),
+            vout: 1,
+            amount: 49_000,
+            script_pubkey: vec![4, 5, 6],
+            yona_address: String::new(),
+            bridge_pubkey: vec![],
+            redeem_script: vec![],
+            status: UTXO_STATUS_PENDING_CHANGE.to_string(),
+            spent_by_txid: None,
+        };
+        pending_change.insert(&pool).await.unwrap();
+
+        WithdrawTransactionInfo::add_new(&pool, &sol_sig, &spending_txid, &[7, 8, 9])
+            .await
+            .unwrap();
+        let withdrawal = WithdrawTransactionInfo::get_by_solana_signature(&pool, &sol_sig)
+            .await
+            .unwrap()
+            .unwrap();
+
+        finalize_withdrawal_in_db(&pool, &withdrawal).await.unwrap();
+
+        assert!(Utxo::get_utxo(&pool, &input_txid.to_byte_array(), 0)
+            .await
+            .unwrap()
+            .is_none());
+
+        let confirmed_change = Utxo::get_utxo(&pool, &spending_txid.to_byte_array(), 1)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(confirmed_change.status, UTXO_STATUS_CONFIRMED);
+
+        let stored = WithdrawTransactionInfo::get_by_solana_signature(&pool, &sol_sig)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.status, "confirmed");
+    }
+
+    #[tokio::test]
+    async fn test_spendable_utxos_exclude_pending_and_spent_rows() {
+        let pool = init_test_pool().await;
+
+        let confirmed = Utxo {
+            txid: [1; 32],
+            vout: 0,
+            amount: 10_000,
+            script_pubkey: vec![1],
+            yona_address: String::new(),
+            bridge_pubkey: vec![],
+            redeem_script: vec![],
+            status: UTXO_STATUS_CONFIRMED.to_string(),
+            spent_by_txid: None,
+        };
+        confirmed.insert(&pool).await.unwrap();
+
+        let pending = Utxo {
+            txid: [2; 32],
+            vout: 0,
+            amount: 20_000,
+            script_pubkey: vec![2],
+            yona_address: String::new(),
+            bridge_pubkey: vec![],
+            redeem_script: vec![],
+            status: UTXO_STATUS_PENDING_CHANGE.to_string(),
+            spent_by_txid: None,
+        };
+        pending.insert(&pool).await.unwrap();
+
+        let spent = Utxo {
+            txid: [3; 32],
+            vout: 0,
+            amount: 30_000,
+            script_pubkey: vec![3],
+            yona_address: String::new(),
+            bridge_pubkey: vec![],
+            redeem_script: vec![],
+            status: UTXO_STATUS_SPENT_PENDING.to_string(),
+            spent_by_txid: Some([9; 32]),
+        };
+        spent.insert(&pool).await.unwrap();
+
+        let spendable = Utxo::get_spendable_utxos(&pool).await.unwrap();
+        assert_eq!(spendable.len(), 1);
+        assert_eq!(spendable[0].txid, [1; 32]);
     }
 }

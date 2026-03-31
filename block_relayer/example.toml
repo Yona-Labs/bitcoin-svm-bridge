@@ -6,6 +6,8 @@ yona_http = "http://devnet-rpc.yona.network:8899"
 yona_ws = "ws://devnet-rpc.yona.network:8900"
 # The file path to the Yona keypair JSON file. It is relative to the current user's home directory.
 yona_keipair = ".config/solana/id.json"
+btc_deposit_confirmations = 6
+btc_withdraw_confirmations = 6
 
 # Bitcoin RPC authorization section
 [bitcoin_auth]

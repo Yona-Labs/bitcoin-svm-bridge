@@ -389,6 +389,7 @@ pub async fn relay_tx(
     bitcoind_client: Arc<BitcoinRpcClient>,
     tx_id: Txid,
     wbtc_receiver_sol: Pubkey,
+    required_confirmations: u32,
 ) -> Result<Signature, RelayTxError> {
     let (wbtc_mint, _) = Pubkey::find_program_address(&[WBTC_MINT_SEED], &program.id());
     let wbtc_receiver = get_associated_token_address(&wbtc_receiver_sol, &wbtc_mint);
@@ -478,7 +479,7 @@ pub async fn relay_tx(
         data: VerifySmallTxInstruction {
             tx_id,
             tx_bytes: transaction.hex.clone(),
-            confirmations: 1,
+            confirmations: required_confirmations,
             tx_index: tx_pos as u32,
             reversed_merkle_proof: reversed_merkle_proof.clone(),
             proof_header,
@@ -513,7 +514,7 @@ pub async fn relay_tx(
             .args(VerifySmallTxInstruction {
                 tx_id,
                 tx_bytes: transaction.hex,
-                confirmations: 1,
+                confirmations: required_confirmations,
                 tx_index: tx_pos as u32,
                 reversed_merkle_proof,
                 proof_header,
@@ -536,7 +537,7 @@ pub async fn relay_tx(
             data: InitBigTxVerifyInstruction {
                 tx_id,
                 tx_size: transaction.hex.len() as u64,
-                confirmations: 1,
+                confirmations: required_confirmations,
                 tx_index: tx_pos as u32,
                 reversed_merkle_proof: reversed_merkle_proof.clone(),
                 proof_header,
@@ -564,7 +565,7 @@ pub async fn relay_tx(
             .args(InitBigTxVerifyInstruction {
                 tx_id,
                 tx_size: transaction.hex.len() as u64,
-                confirmations: 1,
+                confirmations: required_confirmations,
                 tx_index: tx_pos as u32,
                 reversed_merkle_proof,
                 proof_header,
