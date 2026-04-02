@@ -1,14 +1,19 @@
 pub mod bridge_db;
 pub mod config;
 mod merkle;
+pub mod metrics;
 pub mod relay_program_interaction;
 pub mod relay_transactions;
 
 use crate::bridge_db::{
-    insert_solana_transaction, set_transaction_processed, solana_transaction_processed,
-    WithdrawTransactionInfo, Utxo, UTXO_STATUS_CONFIRMED, UTXO_STATUS_PENDING_CHANGE,
+    insert_solana_transaction, set_transaction_processed, solana_transaction_processed, Utxo,
+    WithdrawStatus, WithdrawTransactionInfo, UTXO_STATUS_CONFIRMED, UTXO_STATUS_PENDING_CHANGE,
 };
 use crate::config::RelayConfig;
+use crate::metrics::{
+    inc_event, observe_confirmations, set_block_height, start_reconcile_timer,
+    update_pending_metrics,
+};
 use crate::relay_program_interaction::*;
 use anchor_client::anchor_lang::{AccountDeserialize, AnchorDeserialize, Discriminator, Id};
 use anchor_client::solana_client::rpc_client::GetConfirmedSignaturesForAddress2Config;
@@ -32,13 +37,13 @@ use bitcoin::{
     Address, Amount, BlockHash, EcdsaSighashType, KnownHrp, Network, OutPoint, PrivateKey,
     PublicKey, Script, Sequence, Transaction, TxIn, TxOut, Txid, Witness,
 };
-use btc_relay::utils::{compute_new_nbits, nbits_to_target};
 use bitcoincore_rpc::jsonrpc::minreq_http::MinreqHttpTransport;
 use bitcoincore_rpc::{Client as BitcoinRpcClient, Error as BtcError, RpcApi};
 use btc_relay::events::{DepositTxVerified, StoreHeader, Withdrawal};
 use btc_relay::program::BtcRelay;
 use btc_relay::state::MainState;
 use btc_relay::utils::bridge_deposit_script;
+use btc_relay::utils::{compute_new_nbits, nbits_to_target};
 use log::{debug, error, info};
 use solana_transaction_status::option_serializer::OptionSerializer;
 use sqlx::SqlitePool;
@@ -68,11 +73,14 @@ pub async fn relay_blocks_from_full_node(config: RelayConfig, wait_for_new_block
     let yona_client = get_yona_client(&config).expect("Couldn't create Yona client");
 
     let transport = MinreqHttpTransport::builder()
-    .url(&config.bitcoind_url)
-    .map_err(|e| BtcError::JsonRpc(e.into())).unwrap().build();
+        .url(&config.bitcoind_url)
+        .map_err(|e| BtcError::JsonRpc(e.into()))
+        .unwrap()
+        .build();
 
-    let bitcoind_client = BitcoinRpcClient::from_jsonrpc(jsonrpc::Client::with_transport(transport));
-        // .expect("Couldn't create Bitcoin client");
+    let bitcoind_client =
+        BitcoinRpcClient::from_jsonrpc(jsonrpc::Client::with_transport(transport));
+    // .expect("Couldn't create Bitcoin client");
 
     let relay_program = BtcRelay::id();
     let program = yona_client
@@ -101,7 +109,7 @@ pub async fn relay_blocks_from_full_node(config: RelayConfig, wait_for_new_block
                     continue;
                 }
             };
-        
+
         let mut block_hash = main_state_data.tip_block_hash;
         let mut commited_header = match tokio::task::block_in_place(|| {
             reconstruct_commited_header(
@@ -158,6 +166,9 @@ pub async fn relay_blocks_from_full_node(config: RelayConfig, wait_for_new_block
             }
         };
 
+        set_block_height("bitcoin_best", best_block_height);
+        set_block_height("yona_relay_tip", last_submitted_height);
+
         if last_submitted_height >= best_block_height {
             info!("Latest BTC block {best_block_height} is already submitted to Yona. Waiting for a new one.");
             tokio::time::sleep(Duration::from_secs(wait_for_new_block)).await;
@@ -188,13 +199,22 @@ pub async fn relay_blocks_from_full_node(config: RelayConfig, wait_for_new_block
             }
         };
 
-
         if new_height % 2016 == 0 {
-            let prev_hash = tokio::task::block_in_place(|| bitcoind_client.get_block_hash((new_height - 1) as u64)).expect("Bad retarget");
-            let start_hash = tokio::task::block_in_place(|| bitcoind_client.get_block_hash((new_height - 2016) as u64)).expect("Bad retarget");
+            let prev_hash = tokio::task::block_in_place(|| {
+                bitcoind_client.get_block_hash((new_height - 1) as u64)
+            })
+            .expect("Bad retarget");
+            let start_hash = tokio::task::block_in_place(|| {
+                bitcoind_client.get_block_hash((new_height - 2016) as u64)
+            })
+            .expect("Bad retarget");
 
-            let prev_hdr = tokio::task::block_in_place(|| bitcoind_client.get_block_header(&prev_hash)).expect("Bad retarget");
-            let start_hdr = tokio::task::block_in_place(|| bitcoind_client.get_block_header(&start_hash)).expect("Bad retarget");
+            let prev_hdr =
+                tokio::task::block_in_place(|| bitcoind_client.get_block_header(&prev_hash))
+                    .expect("Bad retarget");
+            let start_hdr =
+                tokio::task::block_in_place(|| bitcoind_client.get_block_header(&start_hash))
+                    .expect("Bad retarget");
 
             if main_state_data.last_diff_adjustment != start_hdr.time {
                 error!("[RETARGET] BAD STATE: main_state.last_diff_adjustment={} but BTC start_time(H-2016)={}. You initialized incorrectly; retarget may fail.",
@@ -223,8 +243,6 @@ pub async fn relay_blocks_from_full_node(config: RelayConfig, wait_for_new_block
             }
         }
 
-
-
         if let Err(e) = submit_block(
             &program,
             main_state,
@@ -234,10 +252,12 @@ pub async fn relay_blocks_from_full_node(config: RelayConfig, wait_for_new_block
         )
         .await
         {
+            inc_event("header_relay", "error", "submit_failed");
             error!("Error {e:?} on block submit attempt");
             tokio::time::sleep(Duration::from_secs(10)).await;
             continue;
         }
+        inc_event("header_relay", "ok", "none");
     }
 }
 
@@ -293,14 +313,17 @@ pub async fn run_init_program(
         get_yona_client(&config).map_err(BlockRelayerError::CouldNotInitYonaClient)?;
 
     let transport = MinreqHttpTransport::builder()
-    .url(&config.bitcoind_url)
-    .map_err(|e| BtcError::JsonRpc(e.into())).unwrap().build();
+        .url(&config.bitcoind_url)
+        .map_err(|e| BtcError::JsonRpc(e.into()))
+        .unwrap()
+        .build();
 
-    let bitcoind_client = BitcoinRpcClient::from_jsonrpc(jsonrpc::Client::with_transport(transport));
+    let bitcoind_client =
+        BitcoinRpcClient::from_jsonrpc(jsonrpc::Client::with_transport(transport));
 
     let relay_program = BtcRelay::id();
     let program = yona_client.program(relay_program)?;
-    
+
     let (block_height, block_hash) = if let Some(h) = init_height {
         let bh = tokio::task::block_in_place(|| bitcoind_client.get_block_hash(h as u64))?;
         (h, bh)
@@ -312,7 +335,7 @@ pub async fn run_init_program(
 
     debug!("Init using BTC block height={block_height}, hash={block_hash:02x}");
     let last_block = tokio::task::block_in_place(|| bitcoind_client.get_block(&block_hash))?;
- 
+
     Ok(init_program(
         &program,
         &bitcoind_client,
@@ -341,10 +364,13 @@ pub async fn run_submit_block_fork(
     let main_state_data = MainState::try_deserialize_unchecked(&mut &raw_account.data[..8160])?;
 
     let transport = MinreqHttpTransport::builder()
-    .url(&config.bitcoind_url)
-    .map_err(|e| BtcError::JsonRpc(e.into())).unwrap().build();
+        .url(&config.bitcoind_url)
+        .map_err(|e| BtcError::JsonRpc(e.into()))
+        .unwrap()
+        .build();
 
-    let bitcoind_client = BitcoinRpcClient::from_jsonrpc(jsonrpc::Client::with_transport(transport));
+    let bitcoind_client =
+        BitcoinRpcClient::from_jsonrpc(jsonrpc::Client::with_transport(transport));
 
     let relay_program = BtcRelay::id();
     let program = yona_client.program(relay_program)?;
@@ -388,9 +414,11 @@ async fn reconcile_pending_withdrawals(
     bitcoin_rpc_client: &BitcoinRpcClient,
     required_confirmations: u32,
 ) {
+    let _timer = start_reconcile_timer("withdraw");
     let pending_withdrawals = match WithdrawTransactionInfo::get_non_finalized(pool).await {
         Ok(withdrawals) => withdrawals,
         Err(e) => {
+            inc_event("withdraw_reconcile", "error", "load_pending_failed");
             error!("Error {e:?} on getting pending withdrawals");
             return;
         }
@@ -402,14 +430,21 @@ async fn reconcile_pending_withdrawals(
         match bitcoin_rpc_client.get_raw_transaction_info(&txid, None) {
             Ok(info) => {
                 let confirmations = info.confirmations.unwrap_or(0);
+                observe_confirmations("withdraw_reconcile", confirmations);
                 if confirmations >= required_confirmations {
                     if let Err(e) = finalize_withdrawal_in_db(pool, &withdrawal).await {
+                        inc_event("withdraw_reconcile", "error", "finalize_db_failed");
                         error!("Error {e:?} on finalizing confirmed withdrawal");
+                    } else {
+                        inc_event("withdraw_reconcile", "confirmed", "none");
                     }
+                } else {
+                    inc_event("withdraw_reconcile", "pending", "awaiting_confirmations");
                 }
             }
             Err(_) => {
                 let Some(raw_tx) = withdrawal.raw_tx.as_ref() else {
+                    inc_event("withdraw_reconcile", "error", "missing_raw_tx");
                     error!(
                         "Pending withdrawal {} has no raw tx bytes",
                         withdrawal.solana_tx_signature
@@ -422,7 +457,9 @@ async fn reconcile_pending_withdrawals(
                         .expect("valid serialized bitcoin tx"),
                 ) {
                     Ok(rebroadcast_txid) => {
+                        inc_event("withdraw_reconcile", "rebroadcast", "tx_not_found");
                         if rebroadcast_txid != txid {
+                            inc_event("withdraw_reconcile", "error", "rebroadcast_txid_mismatch");
                             error!(
                                 "Rebroadcast txid mismatch: expected {}, got {}",
                                 txid, rebroadcast_txid
@@ -430,6 +467,7 @@ async fn reconcile_pending_withdrawals(
                         }
                     }
                     Err(e) => {
+                        inc_event("withdraw_reconcile", "error", "rebroadcast_failed");
                         error!("Error {e:?} on rebroadcasting pending withdrawal {txid}");
                     }
                 }
@@ -451,7 +489,12 @@ async fn finalize_withdrawal_in_db(
         Utxo::delete_utxo(pool, &utxo.txid, utxo.vout).await?;
     }
 
-    WithdrawTransactionInfo::set_status(pool, &withdrawal.solana_tx_signature, "confirmed").await
+    WithdrawTransactionInfo::set_status(
+        pool,
+        &withdrawal.solana_tx_signature,
+        WithdrawStatus::Confirmed,
+    )
+    .await
 }
 
 pub async fn process_bridge_events(
@@ -464,18 +507,26 @@ pub async fn process_bridge_events(
     let yona_client = get_yona_client(&config).expect("Couldn't create Yona client");
 
     let transport = MinreqHttpTransport::builder()
-    .url(&config.bitcoind_url)
-    .map_err(|e| BtcError::JsonRpc(e.into())).unwrap().build();
+        .url(&config.bitcoind_url)
+        .map_err(|e| BtcError::JsonRpc(e.into()))
+        .unwrap()
+        .build();
 
-    let bitcoin_rpc_client = BitcoinRpcClient::from_jsonrpc(jsonrpc::Client::with_transport(transport));
+    let bitcoin_rpc_client =
+        BitcoinRpcClient::from_jsonrpc(jsonrpc::Client::with_transport(transport));
 
     let program = yona_client
         .program(btc_relay::id())
         .expect("Couldn't create relay program instance");
 
     loop {
-        reconcile_pending_withdrawals(&pool, &bitcoin_rpc_client, config.btc_withdraw_confirmations)
-            .await;
+        reconcile_pending_withdrawals(
+            &pool,
+            &bitcoin_rpc_client,
+            config.btc_withdraw_confirmations,
+        )
+        .await;
+        update_pending_metrics(&pool).await;
 
         let config = GetConfirmedSignaturesForAddress2Config {
             before: None,
@@ -542,7 +593,11 @@ pub async fn process_bridge_events(
             {
                 if bytes.starts_with(&DepositTxVerified::DISCRIMINATOR) {
                     let event = DepositTxVerified::try_from_slice(&bytes[8..]).unwrap();
-                    info!("[BRIDGE EVENT] DEPOSIT sol_sig={} btc_txid={}", signature, Txid::from_byte_array(event.tx_id));
+                    info!(
+                        "[BRIDGE EVENT] DEPOSIT sol_sig={} btc_txid={}",
+                        signature,
+                        Txid::from_byte_array(event.tx_id)
+                    );
                     let bitcoin_tx = bitcoin_rpc_client
                         .get_raw_transaction(&Txid::from_byte_array(event.tx_id), None)
                         .expect("get_raw_transaction");
@@ -569,6 +624,11 @@ pub async fn process_bridge_events(
                                 spent_by_txid: None,
                             };
                             if let Err(e) = utxo.insert(&pool).await {
+                                inc_event(
+                                    "withdraw_broadcast",
+                                    "error",
+                                    "deposit_utxo_insert_failed",
+                                );
                                 error!("Error on UTXO insertion {e:?}");
                             }
                         }
@@ -576,14 +636,22 @@ pub async fn process_bridge_events(
                 } else if bytes.starts_with(&Withdrawal::DISCRIMINATOR) {
                     let event = Withdrawal::try_from_slice(&bytes[8..]).unwrap();
                     info!("Got withdrawal event {event:?}");
-                    info!("[BRIDGE EVENT] WITHDRAW sol_sig={} btc_addr={} gross_sats={}", signature, event.bitcoin_address, event.amount);
+                    info!(
+                        "[BRIDGE EVENT] WITHDRAW sol_sig={} btc_addr={} gross_sats={}",
+                        signature, event.bitcoin_address, event.amount
+                    );
                     if event.amount < 1546 {
-                        error!("Skip withdrawal: amount {} too small (min gross is 1546 sats)", event.amount);
+                        inc_event("withdraw_broadcast", "rejected", "amount_too_small");
+                        error!(
+                            "Skip withdrawal: amount {} too small (min gross is 1546 sats)",
+                            event.amount
+                        );
                         continue;
-                    } 
+                    }
                     let available_utxos = match Utxo::get_spendable_utxos(&pool).await {
                         Ok(utxos) => utxos,
                         Err(e) => {
+                            inc_event("withdraw_broadcast", "error", "load_utxos_failed");
                             error!("Error {e:?} on getting utxos");
                             return;
                         }
@@ -624,6 +692,7 @@ pub async fn process_bridge_events(
                     }
 
                     if collected_amount < event.amount + 546 {
+                        inc_event("withdraw_broadcast", "rejected", "insufficient_utxos");
                         error!(
                             "Skip withdrawal: insufficient UTXOs, collected={}, need_at_least={}",
                             collected_amount,
@@ -701,6 +770,7 @@ pub async fn process_bridge_events(
                         bitcoin_rpc_client.send_raw_transaction(&tx)
                     }) {
                         Ok(id) => {
+                            inc_event("withdraw_broadcast", "ok", "none");
                             info!("Processed bridge withdrawal, Bitcoin tx id {}", id);
                             let raw_tx = serialize(&tx);
 
@@ -732,10 +802,18 @@ pub async fn process_bridge_events(
                             };
 
                             if let Err(e) = utxo.insert(&pool).await {
+                                inc_event(
+                                    "withdraw_broadcast",
+                                    "error",
+                                    "change_utxo_insert_failed",
+                                );
                                 error!("Error on UTXO insertion {e:?}");
                             }
                         }
-                        Err(e) => error!("Error {e:?} on broadcasting Bitcoin tx"),
+                        Err(e) => {
+                            inc_event("withdraw_broadcast", "error", "broadcast_failed");
+                            error!("Error {e:?} on broadcasting Bitcoin tx")
+                        }
                     }
                 }
             }
@@ -753,7 +831,7 @@ mod tests {
     use super::finalize_withdrawal_in_db;
     use super::reconcile_pending_withdrawals;
     use crate::bridge_db::{
-        init_test_pool, WithdrawTransactionInfo, Utxo, UTXO_STATUS_CONFIRMED,
+        init_test_pool, Utxo, WithdrawStatus, WithdrawTransactionInfo, UTXO_STATUS_CONFIRMED,
         UTXO_STATUS_PENDING_CHANGE, UTXO_STATUS_SPENT_PENDING,
     };
     use anchor_client::solana_sdk::signature::Signature;
@@ -761,9 +839,9 @@ mod tests {
     use bitcoin::hashes::Hash;
     use bitcoin::hex::FromHex;
     use bitcoin::Network;
+    use bitcoin::Txid;
     use bitcoincore_rpc::jsonrpc::minreq_http::MinreqHttpTransport;
     use bitcoincore_rpc::{Client as BitcoinRpcClient, RpcApi};
-    use bitcoin::Txid;
     use std::env;
     use std::str::FromStr;
 
@@ -866,7 +944,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(stored.status, "confirmed");
+        assert_eq!(stored.status, WithdrawStatus::Confirmed);
     }
 
     #[tokio::test]
@@ -940,7 +1018,9 @@ mod tests {
             .require_network(Network::Regtest)
             .unwrap();
 
-        root_client.generate_to_address(101, &mining_address).unwrap();
+        root_client
+            .generate_to_address(101, &mining_address)
+            .unwrap();
 
         let payout_address = wallet_client
             .get_new_address(None, None)
@@ -1004,7 +1084,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(before_mining.status, "broadcasted");
+        assert_eq!(before_mining.status, WithdrawStatus::Broadcasted);
 
         let stale_block = root_client.generate_to_address(1, &mining_address).unwrap()[0];
         reconcile_pending_withdrawals(&pool, &root_client, 2).await;
@@ -1012,7 +1092,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(after_one_conf.status, "broadcasted");
+        assert_eq!(after_one_conf.status, WithdrawStatus::Broadcasted);
 
         root_client.invalidate_block(&stale_block).unwrap();
         reconcile_pending_withdrawals(&pool, &root_client, 2).await;
@@ -1021,7 +1101,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(after_reorg.status, "broadcasted");
+        assert_eq!(after_reorg.status, WithdrawStatus::Broadcasted);
         assert_eq!(
             Utxo::get_utxo(&pool, &[4; 32], 0)
                 .await
@@ -1054,7 +1134,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(still_pending.status, "broadcasted");
+        assert_eq!(still_pending.status, WithdrawStatus::Broadcasted);
         assert_eq!(
             Utxo::get_utxo(&pool, &[4; 32], 0)
                 .await
@@ -1094,7 +1174,9 @@ mod tests {
             .unwrap()
             .require_network(Network::Regtest)
             .unwrap();
-        root_client.generate_to_address(101, &mining_address).unwrap();
+        root_client
+            .generate_to_address(101, &mining_address)
+            .unwrap();
 
         let deposit_addr_1 = wallet_client
             .get_new_address(None, None)
@@ -1139,7 +1221,10 @@ mod tests {
 
         assert_eq!(tx_1_after_first_block.confirmations.unwrap_or(0), 1);
         assert_eq!(tx_2_after_first_block.confirmations.unwrap_or(0), 1);
-        assert_eq!(tx_1_after_first_block.blockhash, tx_2_after_first_block.blockhash);
+        assert_eq!(
+            tx_1_after_first_block.blockhash,
+            tx_2_after_first_block.blockhash
+        );
         assert!(tx_1_after_first_block.confirmations.unwrap_or(0) < 6);
         assert!(tx_2_after_first_block.confirmations.unwrap_or(0) < 6);
 

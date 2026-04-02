@@ -5,9 +5,13 @@ use std::str::FromStr;
 mod solana_transaction;
 pub use solana_transaction::*;
 mod utxo;
-pub use utxo::{Utxo, UTXO_STATUS_CONFIRMED, UTXO_STATUS_PENDING_CHANGE, UTXO_STATUS_SPENT_PENDING};
+pub use utxo::{
+    Utxo, UTXO_STATUS_CONFIRMED, UTXO_STATUS_PENDING_CHANGE, UTXO_STATUS_SPENT_PENDING,
+};
 mod withdraw_transaction_info;
-pub use withdraw_transaction_info::WithdrawTransactionInfo;
+pub use withdraw_transaction_info::{
+    PendingWithdrawStats, WithdrawStatus, WithdrawTransactionInfo,
+};
 
 pub async fn init_test_pool() -> SqlitePool {
     let connect_options = SqliteConnectOptions::from_str("sqlite::memory:?cache=shared")
@@ -99,7 +103,57 @@ mod tests {
 
         assert_eq!(retrieved_info.solana_tx_signature, solana_signature);
         assert_eq!(retrieved_info.bitcoin_tx_id, bitcoin_txid);
-        assert_eq!(retrieved_info.status, "broadcasted");
+        assert_eq!(retrieved_info.status, WithdrawStatus::Broadcasted);
         assert_eq!(retrieved_info.raw_tx, Some(vec![1, 2, 3]));
+        assert!(retrieved_info.created_at_unix > 0);
+
+        let pending_stats = WithdrawTransactionInfo::pending_stats(&pool).await.unwrap();
+        assert_eq!(pending_stats.count, 1);
+        assert_eq!(
+            pending_stats.oldest_created_at_unix,
+            Some(retrieved_info.created_at_unix)
+        );
+
+        WithdrawTransactionInfo::set_status(&pool, &solana_signature, WithdrawStatus::Confirmed)
+            .await
+            .unwrap();
+
+        let pending_stats = WithdrawTransactionInfo::pending_stats(&pool).await.unwrap();
+        assert_eq!(pending_stats.count, 0);
+        assert_eq!(pending_stats.oldest_created_at_unix, None);
+    }
+
+    #[tokio::test]
+    async fn test_get_non_finalized_excludes_confirmed_withdrawals() {
+        let pool = init_test_pool().await;
+
+        let pending_signature = Signature::new_unique();
+        let confirmed_signature = Signature::new_unique();
+
+        let pending_txid =
+            Txid::from_str("0000000000000000000000000000000000000000000000000000000000000002")
+                .unwrap();
+        let confirmed_txid =
+            Txid::from_str("0000000000000000000000000000000000000000000000000000000000000003")
+                .unwrap();
+
+        WithdrawTransactionInfo::add_new(&pool, &pending_signature, &pending_txid, &[1])
+            .await
+            .unwrap();
+        WithdrawTransactionInfo::add_new(&pool, &confirmed_signature, &confirmed_txid, &[2])
+            .await
+            .unwrap();
+        WithdrawTransactionInfo::set_status(&pool, &confirmed_signature, WithdrawStatus::Confirmed)
+            .await
+            .unwrap();
+
+        let non_finalized = WithdrawTransactionInfo::get_non_finalized(&pool)
+            .await
+            .unwrap();
+
+        assert_eq!(non_finalized.len(), 1);
+        assert_eq!(non_finalized[0].solana_tx_signature, pending_signature);
+        assert_eq!(non_finalized[0].bitcoin_tx_id, pending_txid);
+        assert_eq!(non_finalized[0].status, WithdrawStatus::Broadcasted);
     }
 }

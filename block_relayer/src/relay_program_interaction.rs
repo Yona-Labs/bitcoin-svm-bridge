@@ -1,19 +1,18 @@
 use crate::merkle::Proof;
-use anchor_client::anchor_lang::{InstructionData, ToAccountMetas};
+use crate::metrics::{inc_event, observe_confirmations};
 use anchor_client::anchor_lang::prelude::{AccountDeserialize, AccountMeta};
+use anchor_client::anchor_lang::{InstructionData, ToAccountMetas};
 use anchor_client::solana_sdk::compute_budget::ComputeBudgetInstruction;
 use anchor_client::solana_sdk::instruction::Instruction;
 use anchor_client::solana_sdk::message::{Message, VersionedMessage};
 use anchor_client::solana_sdk::pubkey::Pubkey;
-use anchor_client::solana_sdk::signature::{Keypair,
-     Signature
-    };
+use anchor_client::solana_sdk::signature::{Keypair, Signature};
+use anchor_client::solana_sdk::transaction::VersionedTransaction;
 use anchor_client::ClientError as AnchorClientError;
 use anchor_client::Program;
-use anchor_client::solana_sdk::transaction::VersionedTransaction;
 use anchor_spl::associated_token::get_associated_token_address;
-use base64::Engine;
 use base64::prelude::BASE64_STANDARD;
+use base64::Engine;
 use bitcoin::hashes::Hash;
 use bitcoin::hex::DisplayHex;
 use bitcoin::{Block, BlockHash, Txid};
@@ -90,7 +89,6 @@ impl From<BtcRpcError> for InitError {
     }
 }
 
-
 // chainwork из bitcoind: big-endian bytes
 fn chainwork_bytes_to_u256_be(chainwork: &[u8]) -> [u8; 32] {
     let mut out = [0u8; 32];
@@ -101,9 +99,6 @@ fn chainwork_bytes_to_u256_be(chainwork: &[u8]) -> [u8; 32] {
     out[32 - n..].copy_from_slice(&chainwork[chainwork.len() - n..]);
     out
 }
-
-
-
 
 pub async fn init_program(
     program: &Program<Arc<Keypair>>,
@@ -150,18 +145,25 @@ pub async fn init_program(
         &anchor_spl::metadata::ID,
     );
 
-    let block_info = tokio::task::block_in_place(|| bitcoind_client.get_block_info(&block.block_hash()))?;
+    let block_info =
+        tokio::task::block_in_place(|| bitcoind_client.get_block_info(&block.block_hash()))?;
     let chain_work = chainwork_bytes_to_u256_be(&block_info.chainwork);
 
-    info!("chainwork as lossy string = {}", String::from_utf8_lossy(&block_info.chainwork));
-    info!("chainwork bytes head = {:?}", &block_info.chainwork.get(..16));
+    info!(
+        "chainwork as lossy string = {}",
+        String::from_utf8_lossy(&block_info.chainwork)
+    );
+    info!(
+        "chainwork bytes head = {:?}",
+        &block_info.chainwork.get(..16)
+    );
 
     let last_adj_height = block_height - (block_height % 2016);
-    let last_adj_hash = tokio::task::block_in_place(|| bitcoind_client.get_block_hash(last_adj_height as u64))?;
-    let last_adj_hdr = tokio::task::block_in_place(|| bitcoind_client.get_block_header(&last_adj_hash))?;
+    let last_adj_hash =
+        tokio::task::block_in_place(|| bitcoind_client.get_block_hash(last_adj_height as u64))?;
+    let last_adj_hdr =
+        tokio::task::block_in_place(|| bitcoind_client.get_block_header(&last_adj_hash))?;
     let last_diff_adjustment = last_adj_hdr.time;
-
-
 
     let res = program
         .request()
@@ -307,7 +309,7 @@ pub enum RelayTxError {
     BitcoinRpc(BtcRpcError),
     TxIsNotIncludedToBlock,
     CouldNotFindTxidInBlock,
-    TxIsNotIncludedToBlockBuffer
+    TxIsNotIncludedToBlockBuffer,
 }
 
 impl From<AnchorClientError> for RelayTxError {
@@ -364,7 +366,11 @@ fn max_store_chunk_size(
 
         let store_ix = Instruction {
             program_id,
-            accounts: StoreTxBytes { signer: payer, tx_account }.to_account_metas(None),
+            accounts: StoreTxBytes {
+                signer: payer,
+                tx_account,
+            }
+            .to_account_metas(None),
             data: StoreTxBytesInstruction {
                 tx_id,
                 bytes: vec![0u8; mid],
@@ -382,7 +388,6 @@ fn max_store_chunk_size(
     lo
 }
 
-
 pub async fn relay_tx(
     program: &Program<Arc<Keypair>>,
     main_state: Pubkey,
@@ -391,6 +396,7 @@ pub async fn relay_tx(
     wbtc_receiver_sol: Pubkey,
     required_confirmations: u32,
 ) -> Result<Signature, RelayTxError> {
+    inc_event("deposit_relay", "pending", "attempt");
     let (wbtc_mint, _) = Pubkey::find_program_address(&[WBTC_MINT_SEED], &program.id());
     let wbtc_receiver = get_associated_token_address(&wbtc_receiver_sol, &wbtc_mint);
 
@@ -410,8 +416,12 @@ pub async fn relay_tx(
 
     let block_hash = match transaction.blockhash {
         Some(hash) => hash,
-        None => return Err(RelayTxError::TxIsNotIncludedToBlock),
+        None => {
+            inc_event("deposit_relay", "rejected", "tx_not_in_block");
+            return Err(RelayTxError::TxIsNotIncludedToBlock);
+        }
     };
+    observe_confirmations("deposit_relay", transaction.confirmations.unwrap_or(0));
 
     let client_clone = bitcoind_client.clone();
     let block_info = tokio::task::spawn_blocking(move || client_clone.get_block_info(&block_hash))
@@ -420,17 +430,17 @@ pub async fn relay_tx(
 
     let tx_height = block_info.height as u32;
     if tx_height > main_state_data.block_height {
+        inc_event("deposit_relay", "rejected", "ahead_of_relay_tip");
         return Err(RelayTxError::TxIsNotIncludedToBlock);
     }
     if tx_height < main_state_data.start_height {
+        inc_event("deposit_relay", "rejected", "below_relay_buffer");
         return Err(RelayTxError::TxIsNotIncludedToBlockBuffer);
     }
 
     let commit_hash = main_state_data.get_commitment(tx_height);
 
-    let merkle_root = {
-        block_info.merkleroot.to_byte_array()
-    };
+    let merkle_root = { block_info.merkleroot.to_byte_array() };
 
     let proof_header = TxProofHeader {
         blockheight: tx_height,
@@ -442,7 +452,10 @@ pub async fn relay_tx(
         .tx
         .iter()
         .position(|in_block| *in_block == tx_id)
-        .ok_or(RelayTxError::CouldNotFindTxidInBlock)?;
+        .ok_or_else(|| {
+            inc_event("deposit_relay", "error", "tx_missing_from_block");
+            RelayTxError::CouldNotFindTxidInBlock
+        })?;
 
     let reversed_merkle_proof = Proof::create(&block_info.tx, tx_pos).to_reversed_vec();
     let tx_bytes_len = transaction.hex.len();
@@ -487,7 +500,8 @@ pub async fn relay_tx(
         .data(),
     };
 
-    let (small_raw, small_b64, small_keys) = estimate_vtx_sizes(program.payer(), &[cu_ix.clone(), verify_ix.clone()]);
+    let (small_raw, small_b64, small_keys) =
+        estimate_vtx_sizes(program.payer(), &[cu_ix.clone(), verify_ix.clone()]);
     info!(
         "[SIZE CHECK] small raw={} (max {}) b64={} (max {}) keys={}",
         small_raw, MAX_RAW_TX, small_b64, MAX_B64_TX, small_keys
@@ -522,6 +536,8 @@ pub async fn relay_tx(
             .send()
             .await?;
 
+        inc_event("deposit_relay", "ok", "none");
+
         Ok(sig)
     } else {
         // big-tx flow
@@ -548,9 +564,11 @@ pub async fn relay_tx(
         let init_fits_with_cu = fits_tx(program.payer(), &[cu_ix.clone(), init_ix.clone()]);
         if !init_fits_with_cu {
             let (r, b, k) = estimate_vtx_sizes(program.payer(), &[cu_ix.clone(), init_ix.clone()]);
-            return Err(RelayTxError::Anchor(AnchorClientError::from(std::io::Error::other(
-                format!("big-init too large even with CU: raw={r} b64={b} keys={k}"),
-            ))));
+            return Err(RelayTxError::Anchor(AnchorClientError::from(
+                std::io::Error::other(format!(
+                    "big-init too large even with CU: raw={r} b64={b} keys={k}"
+                )),
+            )));
         }
 
         program
@@ -573,12 +591,15 @@ pub async fn relay_tx(
             .send()
             .await?;
 
-        let chunk_size = max_store_chunk_size(program.id(), program.payer(), tx_account, tx_id,800);
+        let chunk_size =
+            max_store_chunk_size(program.id(), program.payer(), tx_account, tx_id, 800);
         if chunk_size == 0 {
-            return Err(RelayTxError::Anchor(AnchorClientError::from(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                "could not find any StoreTxBytes chunk size that fits into tx limit",
-            ))));
+            return Err(RelayTxError::Anchor(AnchorClientError::from(
+                std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    "could not find any StoreTxBytes chunk size that fits into tx limit",
+                ),
+            )));
         }
         info!("[BIG FLOW] using chunk_size={}", chunk_size);
 
@@ -614,6 +635,8 @@ pub async fn relay_tx(
             .args(FinalizeTxProcessing { tx_id })
             .send()
             .await?;
+
+        inc_event("deposit_relay", "ok", "none");
 
         Ok(sig)
     }
