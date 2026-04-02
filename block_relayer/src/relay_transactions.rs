@@ -1,6 +1,6 @@
 use crate::bridge_db::WithdrawTransactionInfo;
 use crate::config::RelayConfig;
-use crate::metrics::{inc_event, render_metrics};
+use crate::metrics::{inc_event, render_metrics, MetricEventStatus, MetricFlow, MetricReason};
 use crate::relay_program_interaction::*;
 use actix_cors::Cors;
 use actix_web::{web, App, HttpResponse, HttpServer, Responder};
@@ -65,7 +65,11 @@ async fn relay_tx_web_api(
     match relay_tx_res {
         Ok(sig) => HttpResponse::Ok().json(format!("{sig}")),
         Err(e) => {
-            inc_event("deposit_relay", "error", "send_failed");
+            inc_event(
+                MetricFlow::DepositRelay,
+                MetricEventStatus::Error,
+                MetricReason::SendFailed,
+            );
             error!("{e:?}");
             HttpResponse::InternalServerError().json("Failed to relay bitcoin tx")
         }

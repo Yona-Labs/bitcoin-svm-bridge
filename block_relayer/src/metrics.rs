@@ -1,6 +1,6 @@
 use crate::bridge_db::{
-    PendingWithdrawStats, Utxo, WithdrawStatus, WithdrawTransactionInfo,
-    UTXO_STATUS_PENDING_CHANGE, UTXO_STATUS_SPENT_PENDING,
+    PendingWithdrawStats, Utxo, WithdrawTransactionInfo, UTXO_STATUS_PENDING_CHANGE,
+    UTXO_STATUS_SPENT_PENDING,
 };
 use once_cell::sync::Lazy;
 use prometheus::{
@@ -9,6 +9,133 @@ use prometheus::{
 };
 use sqlx::SqlitePool;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+#[derive(Clone, Copy)]
+pub enum MetricFlow {
+    DepositRelay,
+    WithdrawBroadcast,
+    WithdrawReconcile,
+    HeaderRelay,
+    Withdraw,
+}
+
+impl MetricFlow {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::DepositRelay => "deposit_relay",
+            Self::WithdrawBroadcast => "withdraw_broadcast",
+            Self::WithdrawReconcile => "withdraw_reconcile",
+            Self::HeaderRelay => "header_relay",
+            Self::Withdraw => "withdraw",
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+pub enum MetricEventStatus {
+    Ok,
+    Error,
+    Rejected,
+    Pending,
+    Confirmed,
+    Rebroadcast,
+}
+
+impl MetricEventStatus {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Ok => "ok",
+            Self::Error => "error",
+            Self::Rejected => "rejected",
+            Self::Pending => "pending",
+            Self::Confirmed => "confirmed",
+            Self::Rebroadcast => "rebroadcast",
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+pub enum MetricReason {
+    None,
+    Attempt,
+    TxNotInBlock,
+    AheadOfRelayTip,
+    BelowRelayBuffer,
+    TxMissingFromBlock,
+    SendFailed,
+    SubmitFailed,
+    LoadPendingFailed,
+    FinalizeDbFailed,
+    AwaitingConfirmations,
+    MissingRawTx,
+    RebroadcastTxidMismatch,
+    RebroadcastFailed,
+    DepositUtxoInsertFailed,
+    AmountTooSmall,
+    LoadUtxosFailed,
+    InsufficientUtxos,
+    ChangeUtxoInsertFailed,
+    BroadcastFailed,
+}
+
+impl MetricReason {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Attempt => "attempt",
+            Self::TxNotInBlock => "tx_not_in_block",
+            Self::AheadOfRelayTip => "ahead_of_relay_tip",
+            Self::BelowRelayBuffer => "below_relay_buffer",
+            Self::TxMissingFromBlock => "tx_missing_from_block",
+            Self::SendFailed => "send_failed",
+            Self::SubmitFailed => "submit_failed",
+            Self::LoadPendingFailed => "load_pending_failed",
+            Self::FinalizeDbFailed => "finalize_db_failed",
+            Self::AwaitingConfirmations => "awaiting_confirmations",
+            Self::MissingRawTx => "missing_raw_tx",
+            Self::RebroadcastTxidMismatch => "rebroadcast_txid_mismatch",
+            Self::RebroadcastFailed => "rebroadcast_failed",
+            Self::DepositUtxoInsertFailed => "deposit_utxo_insert_failed",
+            Self::AmountTooSmall => "amount_too_small",
+            Self::LoadUtxosFailed => "load_utxos_failed",
+            Self::InsufficientUtxos => "insufficient_utxos",
+            Self::ChangeUtxoInsertFailed => "change_utxo_insert_failed",
+            Self::BroadcastFailed => "broadcast_failed",
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+pub enum MetricChain {
+    BitcoinBest,
+    YonaRelayTip,
+}
+
+impl MetricChain {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::BitcoinBest => "bitcoin_best",
+            Self::YonaRelayTip => "yona_relay_tip",
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+pub enum PendingMetricStatus {
+    Broadcasted,
+    SpentPending,
+    PendingChange,
+}
+
+impl PendingMetricStatus {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Broadcasted => "broadcasted",
+            Self::SpentPending => "spent_pending",
+            Self::PendingChange => "pending_change",
+        }
+    }
+}
 
 pub static BRIDGE_EVENTS_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
     register_int_counter_vec!(
@@ -74,27 +201,27 @@ pub fn init_metrics() {
     Lazy::force(&BRIDGE_OLDEST_PENDING_AGE_SECONDS);
 }
 
-pub fn inc_event(flow: &str, status: &str, reason: &str) {
+pub fn inc_event(flow: MetricFlow, status: MetricEventStatus, reason: MetricReason) {
     BRIDGE_EVENTS_TOTAL
-        .with_label_values(&[flow, status, reason])
+        .with_label_values(&[flow.as_str(), status.as_str(), reason.as_str()])
         .inc();
 }
 
-pub fn observe_confirmations(flow: &str, confirmations: u32) {
+pub fn observe_confirmations(flow: MetricFlow, confirmations: u32) {
     BRIDGE_CONFIRMATIONS_OBSERVED
-        .with_label_values(&[flow])
+        .with_label_values(&[flow.as_str()])
         .observe(confirmations as f64);
 }
 
-pub fn set_block_height(chain: &str, height: u32) {
+pub fn set_block_height(chain: MetricChain, height: u32) {
     BRIDGE_BLOCK_HEIGHT
-        .with_label_values(&[chain])
+        .with_label_values(&[chain.as_str()])
         .set(height as i64);
 }
 
-pub fn start_reconcile_timer(flow: &str) -> HistogramTimer {
+pub fn start_reconcile_timer(flow: MetricFlow) -> HistogramTimer {
     BRIDGE_RECONCILE_DURATION_SECONDS
-        .with_label_values(&[flow])
+        .with_label_values(&[flow.as_str()])
         .start_timer()
 }
 
@@ -113,13 +240,22 @@ pub async fn update_pending_metrics(pool: &SqlitePool) {
         .unwrap_or(0);
 
     BRIDGE_PENDING_ITEMS
-        .with_label_values(&["withdraw", WithdrawStatus::Broadcasted.as_str()])
+        .with_label_values(&[
+            MetricFlow::Withdraw.as_str(),
+            PendingMetricStatus::Broadcasted.as_str(),
+        ])
         .set(pending_withdrawals.count);
     BRIDGE_PENDING_ITEMS
-        .with_label_values(&["withdraw", "spent_pending"])
+        .with_label_values(&[
+            MetricFlow::Withdraw.as_str(),
+            PendingMetricStatus::SpentPending.as_str(),
+        ])
         .set(spent_pending);
     BRIDGE_PENDING_ITEMS
-        .with_label_values(&["withdraw", "pending_change"])
+        .with_label_values(&[
+            MetricFlow::Withdraw.as_str(),
+            PendingMetricStatus::PendingChange.as_str(),
+        ])
         .set(pending_change);
 
     let now_unix = SystemTime::now()
@@ -132,7 +268,10 @@ pub async fn update_pending_metrics(pool: &SqlitePool) {
         .unwrap_or(0.0);
 
     BRIDGE_OLDEST_PENDING_AGE_SECONDS
-        .with_label_values(&["withdraw", WithdrawStatus::Broadcasted.as_str()])
+        .with_label_values(&[
+            MetricFlow::Withdraw.as_str(),
+            PendingMetricStatus::Broadcasted.as_str(),
+        ])
         .set(oldest_pending_age);
 }
 

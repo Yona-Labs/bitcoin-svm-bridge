@@ -12,7 +12,7 @@ use crate::bridge_db::{
 use crate::config::RelayConfig;
 use crate::metrics::{
     inc_event, observe_confirmations, set_block_height, start_reconcile_timer,
-    update_pending_metrics,
+    update_pending_metrics, MetricChain, MetricEventStatus, MetricFlow, MetricReason,
 };
 use crate::relay_program_interaction::*;
 use anchor_client::anchor_lang::{AccountDeserialize, AnchorDeserialize, Discriminator, Id};
@@ -166,8 +166,8 @@ pub async fn relay_blocks_from_full_node(config: RelayConfig, wait_for_new_block
             }
         };
 
-        set_block_height("bitcoin_best", best_block_height);
-        set_block_height("yona_relay_tip", last_submitted_height);
+        set_block_height(MetricChain::BitcoinBest, best_block_height);
+        set_block_height(MetricChain::YonaRelayTip, last_submitted_height);
 
         if last_submitted_height >= best_block_height {
             info!("Latest BTC block {best_block_height} is already submitted to Yona. Waiting for a new one.");
@@ -252,12 +252,20 @@ pub async fn relay_blocks_from_full_node(config: RelayConfig, wait_for_new_block
         )
         .await
         {
-            inc_event("header_relay", "error", "submit_failed");
+            inc_event(
+                MetricFlow::HeaderRelay,
+                MetricEventStatus::Error,
+                MetricReason::SubmitFailed,
+            );
             error!("Error {e:?} on block submit attempt");
             tokio::time::sleep(Duration::from_secs(10)).await;
             continue;
         }
-        inc_event("header_relay", "ok", "none");
+        inc_event(
+            MetricFlow::HeaderRelay,
+            MetricEventStatus::Ok,
+            MetricReason::None,
+        );
     }
 }
 
@@ -414,11 +422,15 @@ async fn reconcile_pending_withdrawals(
     bitcoin_rpc_client: &BitcoinRpcClient,
     required_confirmations: u32,
 ) {
-    let _timer = start_reconcile_timer("withdraw");
+    let _timer = start_reconcile_timer(MetricFlow::Withdraw);
     let pending_withdrawals = match WithdrawTransactionInfo::get_non_finalized(pool).await {
         Ok(withdrawals) => withdrawals,
         Err(e) => {
-            inc_event("withdraw_reconcile", "error", "load_pending_failed");
+            inc_event(
+                MetricFlow::WithdrawReconcile,
+                MetricEventStatus::Error,
+                MetricReason::LoadPendingFailed,
+            );
             error!("Error {e:?} on getting pending withdrawals");
             return;
         }
@@ -430,21 +442,37 @@ async fn reconcile_pending_withdrawals(
         match bitcoin_rpc_client.get_raw_transaction_info(&txid, None) {
             Ok(info) => {
                 let confirmations = info.confirmations.unwrap_or(0);
-                observe_confirmations("withdraw_reconcile", confirmations);
+                observe_confirmations(MetricFlow::WithdrawReconcile, confirmations);
                 if confirmations >= required_confirmations {
                     if let Err(e) = finalize_withdrawal_in_db(pool, &withdrawal).await {
-                        inc_event("withdraw_reconcile", "error", "finalize_db_failed");
+                        inc_event(
+                            MetricFlow::WithdrawReconcile,
+                            MetricEventStatus::Error,
+                            MetricReason::FinalizeDbFailed,
+                        );
                         error!("Error {e:?} on finalizing confirmed withdrawal");
                     } else {
-                        inc_event("withdraw_reconcile", "confirmed", "none");
+                        inc_event(
+                            MetricFlow::WithdrawReconcile,
+                            MetricEventStatus::Confirmed,
+                            MetricReason::None,
+                        );
                     }
                 } else {
-                    inc_event("withdraw_reconcile", "pending", "awaiting_confirmations");
+                    inc_event(
+                        MetricFlow::WithdrawReconcile,
+                        MetricEventStatus::Pending,
+                        MetricReason::AwaitingConfirmations,
+                    );
                 }
             }
             Err(_) => {
                 let Some(raw_tx) = withdrawal.raw_tx.as_ref() else {
-                    inc_event("withdraw_reconcile", "error", "missing_raw_tx");
+                    inc_event(
+                        MetricFlow::WithdrawReconcile,
+                        MetricEventStatus::Error,
+                        MetricReason::MissingRawTx,
+                    );
                     error!(
                         "Pending withdrawal {} has no raw tx bytes",
                         withdrawal.solana_tx_signature
@@ -457,9 +485,17 @@ async fn reconcile_pending_withdrawals(
                         .expect("valid serialized bitcoin tx"),
                 ) {
                     Ok(rebroadcast_txid) => {
-                        inc_event("withdraw_reconcile", "rebroadcast", "tx_not_found");
+                        inc_event(
+                            MetricFlow::WithdrawReconcile,
+                            MetricEventStatus::Rebroadcast,
+                            MetricReason::TxNotInBlock,
+                        );
                         if rebroadcast_txid != txid {
-                            inc_event("withdraw_reconcile", "error", "rebroadcast_txid_mismatch");
+                            inc_event(
+                                MetricFlow::WithdrawReconcile,
+                                MetricEventStatus::Error,
+                                MetricReason::RebroadcastTxidMismatch,
+                            );
                             error!(
                                 "Rebroadcast txid mismatch: expected {}, got {}",
                                 txid, rebroadcast_txid
@@ -467,7 +503,11 @@ async fn reconcile_pending_withdrawals(
                         }
                     }
                     Err(e) => {
-                        inc_event("withdraw_reconcile", "error", "rebroadcast_failed");
+                        inc_event(
+                            MetricFlow::WithdrawReconcile,
+                            MetricEventStatus::Error,
+                            MetricReason::RebroadcastFailed,
+                        );
                         error!("Error {e:?} on rebroadcasting pending withdrawal {txid}");
                     }
                 }
@@ -625,9 +665,9 @@ pub async fn process_bridge_events(
                             };
                             if let Err(e) = utxo.insert(&pool).await {
                                 inc_event(
-                                    "withdraw_broadcast",
-                                    "error",
-                                    "deposit_utxo_insert_failed",
+                                    MetricFlow::WithdrawBroadcast,
+                                    MetricEventStatus::Error,
+                                    MetricReason::DepositUtxoInsertFailed,
                                 );
                                 error!("Error on UTXO insertion {e:?}");
                             }
@@ -641,7 +681,11 @@ pub async fn process_bridge_events(
                         signature, event.bitcoin_address, event.amount
                     );
                     if event.amount < 1546 {
-                        inc_event("withdraw_broadcast", "rejected", "amount_too_small");
+                        inc_event(
+                            MetricFlow::WithdrawBroadcast,
+                            MetricEventStatus::Rejected,
+                            MetricReason::AmountTooSmall,
+                        );
                         error!(
                             "Skip withdrawal: amount {} too small (min gross is 1546 sats)",
                             event.amount
@@ -651,7 +695,11 @@ pub async fn process_bridge_events(
                     let available_utxos = match Utxo::get_spendable_utxos(&pool).await {
                         Ok(utxos) => utxos,
                         Err(e) => {
-                            inc_event("withdraw_broadcast", "error", "load_utxos_failed");
+                            inc_event(
+                                MetricFlow::WithdrawBroadcast,
+                                MetricEventStatus::Error,
+                                MetricReason::LoadUtxosFailed,
+                            );
                             error!("Error {e:?} on getting utxos");
                             return;
                         }
@@ -692,7 +740,11 @@ pub async fn process_bridge_events(
                     }
 
                     if collected_amount < event.amount + 546 {
-                        inc_event("withdraw_broadcast", "rejected", "insufficient_utxos");
+                        inc_event(
+                            MetricFlow::WithdrawBroadcast,
+                            MetricEventStatus::Rejected,
+                            MetricReason::InsufficientUtxos,
+                        );
                         error!(
                             "Skip withdrawal: insufficient UTXOs, collected={}, need_at_least={}",
                             collected_amount,
@@ -770,7 +822,11 @@ pub async fn process_bridge_events(
                         bitcoin_rpc_client.send_raw_transaction(&tx)
                     }) {
                         Ok(id) => {
-                            inc_event("withdraw_broadcast", "ok", "none");
+                            inc_event(
+                                MetricFlow::WithdrawBroadcast,
+                                MetricEventStatus::Ok,
+                                MetricReason::None,
+                            );
                             info!("Processed bridge withdrawal, Bitcoin tx id {}", id);
                             let raw_tx = serialize(&tx);
 
@@ -803,15 +859,19 @@ pub async fn process_bridge_events(
 
                             if let Err(e) = utxo.insert(&pool).await {
                                 inc_event(
-                                    "withdraw_broadcast",
-                                    "error",
-                                    "change_utxo_insert_failed",
+                                    MetricFlow::WithdrawBroadcast,
+                                    MetricEventStatus::Error,
+                                    MetricReason::ChangeUtxoInsertFailed,
                                 );
                                 error!("Error on UTXO insertion {e:?}");
                             }
                         }
                         Err(e) => {
-                            inc_event("withdraw_broadcast", "error", "broadcast_failed");
+                            inc_event(
+                                MetricFlow::WithdrawBroadcast,
+                                MetricEventStatus::Error,
+                                MetricReason::BroadcastFailed,
+                            );
                             error!("Error {e:?} on broadcasting Bitcoin tx")
                         }
                     }

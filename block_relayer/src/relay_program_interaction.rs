@@ -1,5 +1,7 @@
 use crate::merkle::Proof;
-use crate::metrics::{inc_event, observe_confirmations};
+use crate::metrics::{
+    inc_event, observe_confirmations, MetricEventStatus, MetricFlow, MetricReason,
+};
 use anchor_client::anchor_lang::prelude::{AccountDeserialize, AccountMeta};
 use anchor_client::anchor_lang::{InstructionData, ToAccountMetas};
 use anchor_client::solana_sdk::compute_budget::ComputeBudgetInstruction;
@@ -396,7 +398,11 @@ pub async fn relay_tx(
     wbtc_receiver_sol: Pubkey,
     required_confirmations: u32,
 ) -> Result<Signature, RelayTxError> {
-    inc_event("deposit_relay", "pending", "attempt");
+    inc_event(
+        MetricFlow::DepositRelay,
+        MetricEventStatus::Pending,
+        MetricReason::Attempt,
+    );
     let (wbtc_mint, _) = Pubkey::find_program_address(&[WBTC_MINT_SEED], &program.id());
     let wbtc_receiver = get_associated_token_address(&wbtc_receiver_sol, &wbtc_mint);
 
@@ -417,11 +423,18 @@ pub async fn relay_tx(
     let block_hash = match transaction.blockhash {
         Some(hash) => hash,
         None => {
-            inc_event("deposit_relay", "rejected", "tx_not_in_block");
+            inc_event(
+                MetricFlow::DepositRelay,
+                MetricEventStatus::Rejected,
+                MetricReason::TxNotInBlock,
+            );
             return Err(RelayTxError::TxIsNotIncludedToBlock);
         }
     };
-    observe_confirmations("deposit_relay", transaction.confirmations.unwrap_or(0));
+    observe_confirmations(
+        MetricFlow::DepositRelay,
+        transaction.confirmations.unwrap_or(0),
+    );
 
     let client_clone = bitcoind_client.clone();
     let block_info = tokio::task::spawn_blocking(move || client_clone.get_block_info(&block_hash))
@@ -430,11 +443,19 @@ pub async fn relay_tx(
 
     let tx_height = block_info.height as u32;
     if tx_height > main_state_data.block_height {
-        inc_event("deposit_relay", "rejected", "ahead_of_relay_tip");
+        inc_event(
+            MetricFlow::DepositRelay,
+            MetricEventStatus::Rejected,
+            MetricReason::AheadOfRelayTip,
+        );
         return Err(RelayTxError::TxIsNotIncludedToBlock);
     }
     if tx_height < main_state_data.start_height {
-        inc_event("deposit_relay", "rejected", "below_relay_buffer");
+        inc_event(
+            MetricFlow::DepositRelay,
+            MetricEventStatus::Rejected,
+            MetricReason::BelowRelayBuffer,
+        );
         return Err(RelayTxError::TxIsNotIncludedToBlockBuffer);
     }
 
@@ -453,7 +474,11 @@ pub async fn relay_tx(
         .iter()
         .position(|in_block| *in_block == tx_id)
         .ok_or_else(|| {
-            inc_event("deposit_relay", "error", "tx_missing_from_block");
+            inc_event(
+                MetricFlow::DepositRelay,
+                MetricEventStatus::Error,
+                MetricReason::TxMissingFromBlock,
+            );
             RelayTxError::CouldNotFindTxidInBlock
         })?;
 
@@ -536,7 +561,11 @@ pub async fn relay_tx(
             .send()
             .await?;
 
-        inc_event("deposit_relay", "ok", "none");
+        inc_event(
+            MetricFlow::DepositRelay,
+            MetricEventStatus::Ok,
+            MetricReason::None,
+        );
 
         Ok(sig)
     } else {
@@ -636,7 +665,11 @@ pub async fn relay_tx(
             .send()
             .await?;
 
-        inc_event("deposit_relay", "ok", "none");
+        inc_event(
+            MetricFlow::DepositRelay,
+            MetricEventStatus::Ok,
+            MetricReason::None,
+        );
 
         Ok(sig)
     }
