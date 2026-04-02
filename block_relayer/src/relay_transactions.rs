@@ -1,7 +1,6 @@
-use crate::bridge_db::{
-    WithdrawTransactionInfo,
-};
+use crate::bridge_db::WithdrawTransactionInfo;
 use crate::config::RelayConfig;
+use crate::metrics::{inc_event, render_metrics, MetricEventStatus, MetricFlow, MetricReason};
 use crate::relay_program_interaction::*;
 use actix_cors::Cors;
 use actix_web::{web, App, HttpResponse, HttpServer, Responder};
@@ -17,7 +16,7 @@ use btc_relay::program::BtcRelay;
 use btc_relay::utils::bridge_deposit_script;
 use futures::future::join_all;
 use jsonrpc::minreq_http::MinreqHttpTransport;
-use log::{error};
+use log::error;
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 use std::str::FromStr;
@@ -66,6 +65,11 @@ async fn relay_tx_web_api(
     match relay_tx_res {
         Ok(sig) => HttpResponse::Ok().json(format!("{sig}")),
         Err(e) => {
+            inc_event(
+                MetricFlow::DepositRelay,
+                MetricEventStatus::Error,
+                MetricReason::SendFailed,
+            );
             error!("{e:?}");
             HttpResponse::InternalServerError().json("Failed to relay bitcoin tx")
         }
@@ -164,7 +168,8 @@ async fn get_withdraw_info_web_api(
         Err(_) => return HttpResponse::BadRequest().json("signature is not valid"),
     };
 
-    let withdraw_info_res = WithdrawTransactionInfo::get_by_solana_signature(&data.sqlite_pool, &signature).await;
+    let withdraw_info_res =
+        WithdrawTransactionInfo::get_by_solana_signature(&data.sqlite_pool, &signature).await;
 
     match withdraw_info_res {
         Ok(Some(withdraw_info)) => HttpResponse::Ok().json(WithdrawInfoResponse {
@@ -194,6 +199,18 @@ async fn get_deposit_address(
     HttpResponse::Ok().json(deposit_address.to_string())
 }
 
+async fn metrics_web_api() -> impl Responder {
+    match render_metrics() {
+        Ok(body) => HttpResponse::Ok()
+            .content_type("text/plain; version=0.0.4; charset=utf-8")
+            .body(body),
+        Err(e) => {
+            error!("{e:?}");
+            HttpResponse::InternalServerError().json("Failed to render metrics")
+        }
+    }
+}
+
 pub async fn relay_transactions(
     config: RelayConfig,
     deposit_pubkey_hash: [u8; 20],
@@ -202,10 +219,13 @@ pub async fn relay_transactions(
     let yona_client = get_yona_client(&config).expect("Couldn't create Yona client");
 
     let transport = MinreqHttpTransport::builder()
-    .url(&config.bitcoind_url)
-    .map_err(|e| BtcError::JsonRpc(e.into())).unwrap().build();
+        .url(&config.bitcoind_url)
+        .map_err(|e| BtcError::JsonRpc(e.into()))
+        .unwrap()
+        .build();
 
-    let bitcoin_rpc_client = BitcoinRpcClient::from_jsonrpc(jsonrpc::Client::with_transport(transport));
+    let bitcoin_rpc_client =
+        BitcoinRpcClient::from_jsonrpc(jsonrpc::Client::with_transport(transport));
 
     let relay_program = BtcRelay::id();
     let (main_state, _) = Pubkey::find_program_address(&[b"state"], &relay_program);
@@ -231,7 +251,11 @@ pub async fn relay_transactions(
             .route("/get_deposit_address", web::get().to(get_deposit_address))
             .route("/get_tx_state", web::get().to(get_tx_state_web_api))
             .route("/get_tx_states", web::get().to(get_tx_states_web_api))
-            .route("/get_withdraw_info", web::get().to(get_withdraw_info_web_api))
+            .route(
+                "/get_withdraw_info",
+                web::get().to(get_withdraw_info_web_api),
+            )
+            .route("/metrics", web::get().to(metrics_web_api))
     })
     .bind("0.0.0.0:8199")
     .expect("Couldn't bind to 0.0.0.0:8199")

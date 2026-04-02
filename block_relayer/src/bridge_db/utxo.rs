@@ -109,7 +109,8 @@ impl Utxo {
         vout: u32,
         spending_txid: &[u8],
     ) -> Result<(), sqlx::Error> {
-        let query = "UPDATE utxos SET status = ?1, spent_by_txid = ?2 WHERE txid = ?3 AND vout = ?4";
+        let query =
+            "UPDATE utxos SET status = ?1, spent_by_txid = ?2 WHERE txid = ?3 AND vout = ?4";
 
         sqlx::query(query)
             .bind(UTXO_STATUS_SPENT_PENDING)
@@ -138,10 +139,7 @@ impl Utxo {
         Ok(())
     }
 
-    pub async fn promote_pending_change(
-        pool: &SqlitePool,
-        txid: &[u8],
-    ) -> Result<(), sqlx::Error> {
+    pub async fn promote_pending_change(pool: &SqlitePool, txid: &[u8]) -> Result<(), sqlx::Error> {
         let query = "UPDATE utxos SET status = ?1 WHERE txid = ?2 AND status = ?3";
 
         sqlx::query(query)
@@ -180,5 +178,14 @@ impl Utxo {
             .await?;
 
         Ok(())
+    }
+
+    pub async fn count_by_status(pool: &SqlitePool, status: &str) -> Result<i64, sqlx::Error> {
+        let row: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM utxos WHERE status = ?1")
+            .bind(status)
+            .fetch_one(pool)
+            .await?;
+
+        Ok(row.0)
     }
 }

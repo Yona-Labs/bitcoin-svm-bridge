@@ -8,6 +8,7 @@ use bitcoin::key::{Keypair, Secp256k1};
 use bitcoin::secp256k1::SecretKey;
 use bitcoin::{Network, PrivateKey};
 use block_relayer_lib::config::read_config;
+use block_relayer_lib::metrics::init_metrics;
 use block_relayer_lib::relay_program_interaction::bridge_withdraw;
 use block_relayer_lib::relay_transactions::relay_transactions;
 use block_relayer_lib::{
@@ -56,13 +57,20 @@ fn main() {
     let runtime = Runtime::new().expect("tokio runtime to be created");
 
     match cli.command {
-        RelayerCommand::InitProgram { deposit_pubkey, init_height } => {
+        RelayerCommand::InitProgram {
+            deposit_pubkey,
+            init_height,
+        } => {
             let bridge_pubkey: [u8; 33] =
                 FromHex::from_hex(&deposit_pubkey).expect("Failed to decode pubkey");
             let pubkey_hash = Hash160::hash(&bridge_pubkey);
 
             let result = runtime
-                .block_on(run_init_program(config, pubkey_hash.to_byte_array(), init_height))
+                .block_on(run_init_program(
+                    config,
+                    pubkey_hash.to_byte_array(),
+                    init_height,
+                ))
                 .expect("Relay program initialization failed");
             println!("Initialization tx signature {}", result);
         }
@@ -73,24 +81,26 @@ fn main() {
 
             let bridge_pubkey = private.public_key(&secp256k1);
             let pubkey_hash = Hash160::hash(&bridge_pubkey.to_bytes());
+            init_metrics();
+
+            let sqlite_pool = runtime
+                .block_on(SqlitePool::connect("sqlite:./bridge.db?mode=rwc"))
+                .unwrap();
+
+            runtime
+                .block_on(sqlx::migrate!("./migrations").run(&sqlite_pool))
+                .expect("Can't migrate");
 
             runtime.spawn({
                 let config = config.clone();
                 relay_blocks_from_full_node(config, 30)
             });
-            let sqlite_pool = runtime
-                .block_on(SqlitePool::connect("sqlite:./bridge.db?mode=rwc"))
-                .unwrap();
 
             runtime.spawn({
                 let config = config.clone();
                 let pool = sqlite_pool.clone();
                 relay_transactions(config, pubkey_hash.to_byte_array(), pool)
             });
-
-            runtime
-                .block_on(sqlx::migrate!("./migrations").run(&sqlite_pool))
-                .expect("Can't migrate");
 
             runtime.block_on(process_bridge_events(
                 config,
