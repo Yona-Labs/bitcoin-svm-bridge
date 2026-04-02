@@ -31,7 +31,7 @@ services:
         volume:
           subpath: bridge.db
     ports:
-      - 127.0.0.1:8199:8199
+      - 8199:8199
 
 networks:
   bitcoin-svm-bridge:
