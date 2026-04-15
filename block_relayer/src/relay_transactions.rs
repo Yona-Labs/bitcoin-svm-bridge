@@ -11,7 +11,6 @@ use anchor_client::Program;
 use bitcoin::{Address, Network, Txid};
 use bitcoincore_rpc::Client as BitcoinRpcClient;
 use bitcoincore_rpc::Error as BtcError;
-
 use btc_relay::program::BtcRelay;
 use btc_relay::utils::bridge_deposit_script;
 use futures::future::join_all;
@@ -23,13 +22,13 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use crate::get_yona_client;
-
 pub struct RelayTransactionsState {
     pub relay_program: Program<Arc<Keypair>>,
     pub bitcoin_rpc_client: Arc<BitcoinRpcClient>,
     pub sqlite_pool: SqlitePool,
     pub deposit_pubkey_hash: [u8; 20],
     pub main_state: Pubkey,
+    pub btc_header_confirmations: u32,
     pub btc_deposit_confirmations: u32,
 }
 
@@ -59,6 +58,7 @@ async fn relay_tx_web_api(
         tx_id,
         mint_receiver,
         data.btc_deposit_confirmations,
+        data.btc_header_confirmations,
     )
     .await;
 
@@ -239,6 +239,7 @@ pub async fn relay_transactions(
         main_state,
         deposit_pubkey_hash,
         sqlite_pool,
+        btc_header_confirmations: config.btc_header_confirmations,
         btc_deposit_confirmations: config.btc_deposit_confirmations,
     });
 
@@ -262,4 +263,10 @@ pub async fn relay_transactions(
     .run()
     .await
     .expect("HTTP server hasn't gracefully stop");
+}
+
+#[cfg(test)]
+mod tests {
+    // Deposit confirmation logic is tested in relay_program_interaction where the
+    // same main_state snapshot is used for both the reduction and the proof.
 }

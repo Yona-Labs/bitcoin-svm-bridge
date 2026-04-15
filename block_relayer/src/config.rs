@@ -28,10 +28,16 @@ pub struct RelayConfig {
     pub yona_http: String,
     pub yona_ws: String,
     pub yona_keipair: String,
+    #[serde(default = "default_btc_header_confirmations")]
+    pub btc_header_confirmations: u32,
     #[serde(default = "default_btc_deposit_confirmations")]
     pub btc_deposit_confirmations: u32,
     #[serde(default = "default_btc_withdraw_confirmations")]
     pub btc_withdraw_confirmations: u32,
+}
+
+fn default_btc_header_confirmations() -> u32 {
+    6
 }
 
 fn default_btc_deposit_confirmations() -> u32 {
