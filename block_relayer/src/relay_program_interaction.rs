@@ -42,6 +42,46 @@ use std::sync::Arc;
 const MAX_RAW_TX: usize = 1232;
 const MAX_B64_TX: usize = 1644;
 
+fn effective_deposit_confirmations(
+    btc_deposit_confirmations: u32,
+    btc_header_confirmations: u32,
+    relay_tip_height: u32,
+    bitcoin_best_height: u32,
+    tip_is_canonical: bool,
+) -> u32 {
+    let safe_height =
+        bitcoin_best_height.saturating_sub(btc_header_confirmations.saturating_sub(1));
+    if tip_is_canonical && relay_tip_height <= safe_height {
+        btc_deposit_confirmations.saturating_sub(btc_header_confirmations.saturating_sub(1))
+    } else {
+        btc_deposit_confirmations
+    }
+}
+
+fn tip_is_canonical_for_deposits(
+    relay_tip_height: u32,
+    bitcoin_best_height: u32,
+    relay_tip_hash: BlockHash,
+    bitcoin_hash_at_relay_tip: Option<BlockHash>,
+) -> bool {
+    bitcoin_best_height >= relay_tip_height && bitcoin_hash_at_relay_tip == Some(relay_tip_hash)
+}
+
+fn deposit_height_is_safe(
+    tx_height: u32,
+    btc_header_confirmations: u32,
+    relay_tip_height: u32,
+    bitcoin_best_height: u32,
+) -> bool {
+    let safe_height =
+        bitcoin_best_height.saturating_sub(btc_header_confirmations.saturating_sub(1));
+    if relay_tip_height <= safe_height {
+        true
+    } else {
+        tx_height <= safe_height
+    }
+}
+
 pub(crate) fn reconstruct_commited_header(
     bitcoind_client: &BitcoinRpcClient,
     hash: &BlockHash,
@@ -92,7 +132,7 @@ impl From<BtcRpcError> for InitError {
 }
 
 // chainwork из bitcoind: big-endian bytes
-fn chainwork_bytes_to_u256_be(chainwork: &[u8]) -> [u8; 32] {
+pub(crate) fn chainwork_bytes_to_u256_be(chainwork: &[u8]) -> [u8; 32] {
     let mut out = [0u8; 32];
     if chainwork.is_empty() {
         return out;
@@ -396,7 +436,8 @@ pub async fn relay_tx(
     bitcoind_client: Arc<BitcoinRpcClient>,
     tx_id: Txid,
     wbtc_receiver_sol: Pubkey,
-    required_confirmations: u32,
+    btc_deposit_confirmations: u32,
+    btc_header_confirmations: u32,
 ) -> Result<Signature, RelayTxError> {
     inc_event(
         MetricFlow::DepositRelay,
@@ -419,6 +460,41 @@ pub async fn relay_tx(
         tokio::task::spawn_blocking(move || client_clone.get_raw_transaction_info(&tx_id, None))
             .await
             .expect("no panic")?;
+
+    let client_clone = bitcoind_client.clone();
+    let best_block_hash = tokio::task::spawn_blocking(move || client_clone.get_best_block_hash())
+        .await
+        .expect("no panic")?;
+    let client_clone = bitcoind_client.clone();
+    let best_block_info =
+        tokio::task::spawn_blocking(move || client_clone.get_block_info(&best_block_hash))
+            .await
+            .expect("no panic")?;
+    let bitcoin_hash_at_relay_tip = if best_block_info.height as u32 >= main_state_data.block_height {
+        let client_clone = bitcoind_client.clone();
+        Some(
+            tokio::task::spawn_blocking(move || {
+                client_clone.get_block_hash(main_state_data.block_height as u64)
+            })
+            .await
+            .expect("no panic")?,
+        )
+    } else {
+        None
+    };
+    let tip_is_canonical = tip_is_canonical_for_deposits(
+        main_state_data.block_height,
+        best_block_info.height as u32,
+        BlockHash::from_byte_array(main_state_data.tip_block_hash),
+        bitcoin_hash_at_relay_tip,
+    );
+    let required_confirmations = effective_deposit_confirmations(
+        btc_deposit_confirmations,
+        btc_header_confirmations,
+        main_state_data.block_height,
+        best_block_info.height as u32,
+        tip_is_canonical,
+    );
 
     let block_hash = match transaction.blockhash {
         Some(hash) => hash,
@@ -457,6 +533,19 @@ pub async fn relay_tx(
             MetricReason::BelowRelayBuffer,
         );
         return Err(RelayTxError::TxIsNotIncludedToBlockBuffer);
+    }
+    if !deposit_height_is_safe(
+        tx_height,
+        btc_header_confirmations,
+        main_state_data.block_height,
+        best_block_info.height as u32,
+    ) {
+        inc_event(
+            MetricFlow::DepositRelay,
+            MetricEventStatus::Rejected,
+            MetricReason::AheadOfRelayTip,
+        );
+        return Err(RelayTxError::TxIsNotIncludedToBlock);
     }
 
     let commit_hash = main_state_data.get_commitment(tx_height);
@@ -672,6 +761,88 @@ pub async fn relay_tx(
         );
 
         Ok(sig)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        chainwork_bytes_to_u256_be, deposit_height_is_safe, effective_deposit_confirmations,
+        tip_is_canonical_for_deposits,
+    };
+    use bitcoin::hashes::Hash;
+    use bitcoin::BlockHash;
+
+    fn block_hash(byte: u8) -> BlockHash {
+        BlockHash::from_byte_array([byte; 32])
+    }
+
+    #[test]
+    fn test_effective_deposit_confirmations_offsets_header_delay() {
+        assert_eq!(effective_deposit_confirmations(6, 6, 95, 100, true), 1);
+        assert_eq!(effective_deposit_confirmations(12, 6, 95, 100, true), 7);
+        assert_eq!(effective_deposit_confirmations(3, 6, 95, 100, true), 0);
+        assert_eq!(effective_deposit_confirmations(6, 0, 100, 100, true), 6);
+    }
+
+    #[test]
+    fn test_effective_deposit_confirmations_do_not_reduce_while_relay_is_ahead_of_safe_height() {
+        assert_eq!(effective_deposit_confirmations(6, 6, 100, 100, true), 6);
+        assert_eq!(effective_deposit_confirmations(6, 6, 96, 100, true), 6);
+    }
+
+    #[test]
+    fn test_effective_deposit_confirmations_do_not_reduce_when_tip_is_not_canonical() {
+        assert_eq!(effective_deposit_confirmations(6, 6, 95, 100, false), 6);
+        assert_eq!(effective_deposit_confirmations(3, 6, 95, 100, false), 3);
+    }
+
+    #[test]
+    fn test_tip_is_canonical_for_deposits_requires_matching_hash() {
+        let relay_tip_hash = block_hash(1);
+        assert!(tip_is_canonical_for_deposits(
+            95,
+            100,
+            relay_tip_hash,
+            Some(relay_tip_hash)
+        ));
+        assert!(!tip_is_canonical_for_deposits(
+            95,
+            100,
+            relay_tip_hash,
+            Some(block_hash(2))
+        ));
+    }
+
+    #[test]
+    fn test_tip_is_canonical_for_deposits_requires_backend_to_reach_tip_height() {
+        let relay_tip_hash = block_hash(3);
+        assert!(!tip_is_canonical_for_deposits(
+            100,
+            95,
+            relay_tip_hash,
+            None
+        ));
+    }
+
+    #[test]
+    fn test_deposit_height_is_safe_when_relay_is_delayed() {
+        assert!(deposit_height_is_safe(95, 6, 95, 100));
+        assert!(deposit_height_is_safe(94, 6, 95, 100));
+    }
+
+    #[test]
+    fn test_deposit_height_is_not_safe_above_safe_height_when_relay_tip_is_ahead() {
+        assert!(!deposit_height_is_safe(98, 6, 100, 100));
+        assert!(deposit_height_is_safe(95, 6, 100, 100));
+    }
+
+    #[test]
+    fn test_chainwork_bytes_to_u256_be_preserves_big_endian_value() {
+        let chainwork = [0x12u8, 0x34, 0x56];
+        let converted = chainwork_bytes_to_u256_be(&chainwork);
+        assert_eq!(&converted[29..], &chainwork);
+        assert!(converted[..29].iter().all(|byte| *byte == 0));
     }
 }
 

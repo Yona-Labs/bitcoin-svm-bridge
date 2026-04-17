@@ -44,13 +44,110 @@ use btc_relay::program::BtcRelay;
 use btc_relay::state::MainState;
 use btc_relay::utils::bridge_deposit_script;
 use btc_relay::utils::{compute_new_nbits, nbits_to_target};
-use log::{debug, error, info};
+use log::{debug, error, info, warn};
 use solana_transaction_status::option_serializer::OptionSerializer;
 use sqlx::SqlitePool;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 use std::{env, error};
+
+const MAX_REORG_RECOVERY_DEPTH: u32 = 249;
+
+fn safe_bitcoin_height(best_block_height: u32, required_confirmations: u32) -> u32 {
+    best_block_height.saturating_sub(required_confirmations.saturating_sub(1))
+}
+
+fn last_diff_adjustment_height(block_height: u32) -> u32 {
+    block_height - (block_height % 2016)
+}
+
+fn last_diff_adjustment_for_height(
+    bitcoind_client: &BitcoinRpcClient,
+    block_height: u32,
+) -> Result<u32, BtcError> {
+    let adjustment_height = last_diff_adjustment_height(block_height);
+    let adjustment_hash = bitcoind_client.get_block_hash(adjustment_height as u64)?;
+    let adjustment_header = bitcoind_client.get_block_header(&adjustment_hash)?;
+    Ok(adjustment_header.time)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HeaderRelayAction {
+    WaitForSafeHeight { safe_height: u32 },
+    AheadOfSafeHeight { safe_height: u32 },
+    SubmitNext { new_height: u32 },
+    RecoverFork { fork_height: u32, safe_height: u32 },
+}
+
+fn decide_header_relay_action(
+    relay_tip_height: u32,
+    best_block_height: u32,
+    required_confirmations: u32,
+    tip_matches_chain: bool,
+    common_ancestor_height: Option<u32>,
+) -> HeaderRelayAction {
+    let safe_height = safe_bitcoin_height(best_block_height, required_confirmations);
+    if tip_matches_chain && relay_tip_height == safe_height {
+        return HeaderRelayAction::WaitForSafeHeight { safe_height };
+    }
+    if tip_matches_chain && relay_tip_height > safe_height {
+        return HeaderRelayAction::AheadOfSafeHeight { safe_height };
+    }
+
+    let new_height = relay_tip_height + 1;
+    if tip_matches_chain {
+        return HeaderRelayAction::SubmitNext { new_height };
+    }
+
+    let fork_height = common_ancestor_height
+        .map(|height| height + 1)
+        .unwrap_or(new_height);
+
+    HeaderRelayAction::RecoverFork {
+        fork_height,
+        safe_height,
+    }
+}
+
+fn find_common_ancestor(
+    bitcoind_client: &BitcoinRpcClient,
+    relay_tip_hash: BlockHash,
+    relay_tip_height: u32,
+) -> Result<Option<(u32, BlockHash)>, BtcError> {
+    let mut relay_hash = relay_tip_hash;
+    let mut relay_height = relay_tip_height;
+
+    for _ in 0..=MAX_REORG_RECOVERY_DEPTH {
+        let bitcoin_hash_at_height = bitcoind_client.get_block_hash(relay_height as u64)?;
+        if bitcoin_hash_at_height == relay_hash {
+            return Ok(Some((relay_height, relay_hash)));
+        }
+
+        if relay_height == 0 {
+            break;
+        }
+
+        let relay_header = bitcoind_client.get_block_header(&relay_hash)?;
+        relay_hash = relay_header.prev_blockhash;
+        relay_height -= 1;
+    }
+
+    Ok(None)
+}
+
+fn tip_matches_bitcoin_chain(
+    bitcoind_client: &BitcoinRpcClient,
+    relay_tip_hash: BlockHash,
+    relay_tip_height: u32,
+) -> Result<bool, BtcError> {
+    let bitcoin_hash_at_height = bitcoind_client.get_block_hash(relay_tip_height as u64)?;
+    Ok(bitcoin_hash_at_height == relay_tip_hash)
+}
+
+fn can_check_tip_consistency(relay_tip_height: u32, bitcoin_best_height: u32) -> bool {
+    bitcoin_best_height >= relay_tip_height
+}
 
 pub fn get_yona_client(
     config: &RelayConfig,
@@ -169,13 +266,227 @@ pub async fn relay_blocks_from_full_node(config: RelayConfig, wait_for_new_block
         set_block_height(MetricChain::BitcoinBest, best_block_height);
         set_block_height(MetricChain::YonaRelayTip, last_submitted_height);
 
-        if last_submitted_height >= best_block_height {
-            info!("Latest BTC block {best_block_height} is already submitted to Yona. Waiting for a new one.");
+        let relay_tip_hash = BlockHash::from_byte_array(main_state_data.tip_block_hash);
+        if !can_check_tip_consistency(last_submitted_height, best_block_height) {
+            warn!(
+                "Bitcoin node best height {} is behind relay tip {}. Waiting for backend to catch up.",
+                best_block_height,
+                last_submitted_height
+            );
             tokio::time::sleep(Duration::from_secs(wait_for_new_block)).await;
             continue;
         }
+        let tip_matches_chain = match tokio::task::block_in_place(|| {
+            tip_matches_bitcoin_chain(&bitcoind_client, relay_tip_hash, last_submitted_height)
+        }) {
+            Ok(matches) => matches,
+            Err(e) => {
+                error!(
+                    "Error {e} on Bitcoin tip consistency check at height {}",
+                    last_submitted_height
+                );
+                tokio::time::sleep(Duration::from_secs(10)).await;
+                continue;
+            }
+        };
+
+        let header_action = if tip_matches_chain {
+            decide_header_relay_action(
+                last_submitted_height,
+                best_block_height,
+                config.btc_header_confirmations,
+                true,
+                None,
+            )
+        } else {
+            let common_ancestor = match tokio::task::block_in_place(|| {
+                find_common_ancestor(&bitcoind_client, relay_tip_hash, last_submitted_height)
+            }) {
+                Ok(Some(ancestor)) => ancestor,
+                Ok(None) => {
+                    error!(
+                        "Could not find a common ancestor within {} blocks of relay tip {} at height {}. Manual recovery is required.",
+                        MAX_REORG_RECOVERY_DEPTH,
+                        relay_tip_hash,
+                        last_submitted_height
+                    );
+                    tokio::time::sleep(Duration::from_secs(10)).await;
+                    continue;
+                }
+                Err(e) => {
+                    error!("Error {e} while searching for a common ancestor");
+                    tokio::time::sleep(Duration::from_secs(10)).await;
+                    continue;
+                }
+            };
+
+            decide_header_relay_action(
+                last_submitted_height,
+                best_block_height,
+                config.btc_header_confirmations,
+                false,
+                Some(common_ancestor.0),
+            )
+        };
 
         let new_height = last_submitted_height + 1;
+
+        match header_action {
+            HeaderRelayAction::WaitForSafeHeight { safe_height } => {
+                info!(
+                    "Yona relay tip {} is caught up to safe BTC height {} (best {}, header confirmations {}). Waiting for a new safe block.",
+                    last_submitted_height,
+                    safe_height,
+                    best_block_height,
+                    config.btc_header_confirmations
+                );
+                tokio::time::sleep(Duration::from_secs(wait_for_new_block)).await;
+                continue;
+            }
+            HeaderRelayAction::AheadOfSafeHeight { safe_height } => {
+                warn!(
+                    "Yona relay tip {} is ahead of safe BTC height {} (best {}, header confirmations {}). Waiting for Bitcoin to catch up before applying delay policy.",
+                    last_submitted_height,
+                    safe_height,
+                    best_block_height,
+                    config.btc_header_confirmations
+                );
+                tokio::time::sleep(Duration::from_secs(wait_for_new_block)).await;
+                continue;
+            }
+            HeaderRelayAction::SubmitNext { .. } => {}
+            HeaderRelayAction::RecoverFork {
+                fork_height,
+                safe_height,
+            } => {
+                if fork_height > safe_height {
+                    warn!(
+                        "Relay tip mismatch at height {} but fork height {} is above safe BTC height {}. Waiting for confirmations.",
+                        last_submitted_height, fork_height, safe_height
+                    );
+                    tokio::time::sleep(Duration::from_secs(wait_for_new_block)).await;
+                    continue;
+                }
+                warn!(
+                    "Relay tip mismatch at height {}: Yona tip {} is no longer canonical. Starting fork recovery at height {}.",
+                    last_submitted_height,
+                    relay_tip_hash,
+                    fork_height
+                );
+
+                let common_ancestor = match tokio::task::block_in_place(|| {
+                    find_common_ancestor(&bitcoind_client, relay_tip_hash, last_submitted_height)
+                }) {
+                    Ok(Some(ancestor)) => ancestor,
+                    Ok(None) => {
+                        error!(
+                        "Could not find a common ancestor within {} blocks of relay tip {} at height {}. Manual recovery is required.",
+                        MAX_REORG_RECOVERY_DEPTH,
+                        relay_tip_hash,
+                        last_submitted_height
+                    );
+                        tokio::time::sleep(Duration::from_secs(10)).await;
+                        continue;
+                    }
+                    Err(e) => {
+                        error!("Error {e} while searching for a common ancestor");
+                        tokio::time::sleep(Duration::from_secs(10)).await;
+                        continue;
+                    }
+                };
+
+                let fork_block_hash = match tokio::task::block_in_place(|| {
+                    bitcoind_client.get_block_hash(fork_height as u64)
+                }) {
+                    Ok(hash) => hash,
+                    Err(e) => {
+                        error!(
+                        "Error {e} on Bitcoin's get_block_hash({fork_height}) during fork recovery"
+                    );
+                        tokio::time::sleep(Duration::from_secs(10)).await;
+                        continue;
+                    }
+                };
+
+                let fork_block = match tokio::task::block_in_place(|| {
+                    bitcoind_client.get_block(&fork_block_hash)
+                }) {
+                    Ok(block) => block,
+                    Err(e) => {
+                        error!("Error {e} on Bitcoin's get_block({fork_block_hash:02x}) during fork recovery");
+                        tokio::time::sleep(Duration::from_secs(10)).await;
+                        continue;
+                    }
+                };
+
+                let ancestor_last_diff_adjustment = match tokio::task::block_in_place(|| {
+                    last_diff_adjustment_for_height(&bitcoind_client, common_ancestor.0)
+                }) {
+                    Ok(timestamp) => timestamp,
+                    Err(e) => {
+                        error!(
+                            "Error {e} while loading last_diff_adjustment for common ancestor height {} during fork recovery",
+                            common_ancestor.0
+                        );
+                        tokio::time::sleep(Duration::from_secs(10)).await;
+                        continue;
+                    }
+                };
+
+                let prev_committed_header = match tokio::task::block_in_place(|| {
+                    reconstruct_commited_header(
+                        &bitcoind_client,
+                        &common_ancestor.1,
+                        common_ancestor.0,
+                        ancestor_last_diff_adjustment,
+                    )
+                }) {
+                    Ok(header) => header,
+                    Err(e) => {
+                        error!("Error {e} while reconstructing the common ancestor header during fork recovery");
+                        tokio::time::sleep(Duration::from_secs(10)).await;
+                        continue;
+                    }
+                };
+                let ancestor_chain_work = match tokio::task::block_in_place(|| {
+                    bitcoind_client.get_block_info(&common_ancestor.1)
+                }) {
+                    Ok(info) => chainwork_bytes_to_u256_be(&info.chainwork),
+                    Err(e) => {
+                        error!(
+                            "Error {e} while loading chainwork for common ancestor height {} during fork recovery",
+                            common_ancestor.0
+                        );
+                        tokio::time::sleep(Duration::from_secs(10)).await;
+                        continue;
+                    }
+                };
+                let mut prev_committed_header = prev_committed_header;
+                prev_committed_header.chain_work = ancestor_chain_work;
+
+                match submit_block_fork(
+                    &program,
+                    main_state,
+                    fork_block,
+                    fork_height,
+                    prev_committed_header,
+                )
+                .await
+                {
+                    Ok(_) => {
+                        info!(
+                        "Recovered reorg by submitting fork block at height {} from common ancestor height {}",
+                        fork_height, common_ancestor.0
+                    );
+                    }
+                    Err(e) => {
+                        error!("Error {e:?} on fork recovery submit attempt");
+                        tokio::time::sleep(Duration::from_secs(10)).await;
+                    }
+                }
+                continue;
+            }
+        }
 
         let block_hash_to_submit =
             match tokio::task::block_in_place(|| bitcoind_client.get_block_hash(new_height as u64))
@@ -198,6 +509,15 @@ pub async fn relay_blocks_from_full_node(config: RelayConfig, wait_for_new_block
                 continue;
             }
         };
+
+        if block_to_submit.header.prev_blockhash != relay_tip_hash {
+            error!(
+                "Bitcoin height {} no longer builds on relay tip {} after consistency check. Retrying.",
+                new_height, relay_tip_hash
+            );
+            tokio::time::sleep(Duration::from_secs(10)).await;
+            continue;
+        }
 
         if new_height % 2016 == 0 {
             let prev_hash = tokio::task::block_in_place(|| {
@@ -888,8 +1208,13 @@ pub async fn process_bridge_events(
 
 #[cfg(test)]
 mod tests {
+    use super::decide_header_relay_action;
     use super::finalize_withdrawal_in_db;
+    use super::can_check_tip_consistency;
+    use super::last_diff_adjustment_height;
     use super::reconcile_pending_withdrawals;
+    use super::safe_bitcoin_height;
+    use super::HeaderRelayAction;
     use crate::bridge_db::{
         init_test_pool, Utxo, WithdrawStatus, WithdrawTransactionInfo, UTXO_STATUS_CONFIRMED,
         UTXO_STATUS_PENDING_CHANGE, UTXO_STATUS_SPENT_PENDING,
@@ -942,6 +1267,136 @@ mod tests {
                 .create_wallet(wallet_name, None, None, None, None)
                 .unwrap();
         }
+    }
+
+    #[test]
+    fn test_safe_bitcoin_height_applies_header_delay() {
+        assert_eq!(safe_bitcoin_height(100, 6), 95);
+        assert_eq!(safe_bitcoin_height(6, 6), 1);
+        assert_eq!(safe_bitcoin_height(3, 6), 0);
+        assert_eq!(safe_bitcoin_height(100, 0), 100);
+    }
+
+    #[test]
+    fn test_last_diff_adjustment_height_uses_ancestor_epoch_boundary() {
+        assert_eq!(last_diff_adjustment_height(0), 0);
+        assert_eq!(last_diff_adjustment_height(1), 0);
+        assert_eq!(last_diff_adjustment_height(2015), 0);
+        assert_eq!(last_diff_adjustment_height(2016), 2016);
+        assert_eq!(last_diff_adjustment_height(4031), 2016);
+        assert_eq!(last_diff_adjustment_height(4032), 4032);
+    }
+
+    #[test]
+    fn test_can_check_tip_consistency_only_when_bitcoin_backend_has_the_height() {
+        assert!(can_check_tip_consistency(95, 95));
+        assert!(can_check_tip_consistency(95, 100));
+        assert!(!can_check_tip_consistency(100, 95));
+    }
+
+    #[test]
+    fn test_decide_header_relay_action_waits_when_tip_is_at_safe_height() {
+        let action = decide_header_relay_action(95, 100, 6, true, None);
+
+        assert_eq!(
+            action,
+            HeaderRelayAction::WaitForSafeHeight { safe_height: 95 }
+        );
+    }
+
+    #[test]
+    fn test_decide_header_relay_action_marks_ahead_of_safe_tip_as_non_compliant() {
+        let action = decide_header_relay_action(100, 100, 6, true, None);
+
+        assert_eq!(
+            action,
+            HeaderRelayAction::AheadOfSafeHeight { safe_height: 95 }
+        );
+    }
+
+    #[test]
+    fn test_decide_header_relay_action_submits_next_when_parent_matches_and_safe() {
+        let action = decide_header_relay_action(94, 100, 6, true, None);
+
+        assert_eq!(action, HeaderRelayAction::SubmitNext { new_height: 95 });
+    }
+
+    #[test]
+    fn test_decide_header_relay_action_recovers_fork_once_fork_block_is_safe() {
+        let action = decide_header_relay_action(94, 100, 6, false, Some(93));
+
+        assert_eq!(
+            action,
+            HeaderRelayAction::RecoverFork {
+                fork_height: 94,
+                safe_height: 95
+            }
+        );
+    }
+
+    #[test]
+    fn test_decide_header_relay_action_recovers_reorg_at_safe_boundary_without_exceeding_it() {
+        let action = decide_header_relay_action(95, 101, 6, false, Some(95));
+
+        assert_eq!(
+            action,
+            HeaderRelayAction::RecoverFork {
+                fork_height: 96,
+                safe_height: 96
+            }
+        );
+    }
+
+    #[test]
+    fn test_decide_header_relay_action_recovers_from_deeper_reorg_without_exceeding_safe_height() {
+        let action = decide_header_relay_action(94, 100, 6, false, Some(90));
+
+        assert_eq!(
+            action,
+            HeaderRelayAction::RecoverFork {
+                fork_height: 91,
+                safe_height: 95
+            }
+        );
+    }
+
+    #[test]
+    fn test_decide_header_relay_action_recovers_when_tip_is_orphaned_at_safe_height() {
+        let action = decide_header_relay_action(95, 100, 6, false, Some(94));
+
+        assert_eq!(
+            action,
+            HeaderRelayAction::RecoverFork {
+                fork_height: 95,
+                safe_height: 95
+            }
+        );
+    }
+
+    #[test]
+    fn test_decide_header_relay_action_recovers_when_ahead_of_safe_tip_is_orphaned() {
+        let action = decide_header_relay_action(100, 100, 6, false, Some(98));
+
+        assert_eq!(
+            action,
+            HeaderRelayAction::RecoverFork {
+                fork_height: 99,
+                safe_height: 95
+            }
+        );
+    }
+
+    #[test]
+    fn test_decide_header_relay_action_identifies_recovery_above_safe_height() {
+        let action = decide_header_relay_action(100, 100, 6, false, Some(99));
+
+        assert_eq!(
+            action,
+            HeaderRelayAction::RecoverFork {
+                fork_height: 100,
+                safe_height: 95
+            }
+        );
     }
 
     #[tokio::test]
