@@ -43,7 +43,7 @@ use btc_relay::events::{DepositTxVerified, StoreHeader, Withdrawal};
 use btc_relay::program::BtcRelay;
 use btc_relay::state::MainState;
 use btc_relay::utils::bridge_deposit_script;
-use btc_relay::utils::{compute_new_nbits, nbits_to_target};
+use btc_relay::utils::{compute_new_nbits, get_difficulty, nbits_to_target};
 use log::{debug, error, info, warn};
 use solana_transaction_status::option_serializer::OptionSerializer;
 use sqlx::SqlitePool;
@@ -53,6 +53,43 @@ use std::time::Duration;
 use std::{env, error};
 
 const MAX_REORG_RECOVERY_DEPTH: u32 = 249;
+
+fn sub_u256_be(lhs: &mut [u8; 32], rhs: [u8; 32]) {
+    let mut borrow = 0u16;
+
+    for i in (0..32).rev() {
+        let a = lhs[i] as u16;
+        let b = rhs[i] as u16 + borrow;
+
+        if a >= b {
+            lhs[i] = (a - b) as u8;
+            borrow = 0;
+        } else {
+            lhs[i] = ((a + 256) - b) as u8;
+            borrow = 1;
+        }
+    }
+
+    debug_assert_eq!(borrow, 0, "u256 underflow in sub_u256_be");
+}
+
+fn derive_ancestor_chain_work(
+    bitcoind_client: &BitcoinRpcClient,
+    main_state_data: &MainState,
+    ancestor_height: u32,
+) -> Result<[u8; 32], BtcError> {
+    let mut chain_work = main_state_data.chain_work;
+
+    for h in ((ancestor_height + 1) as u64)..=(main_state_data.block_height as u64) {
+        let stale_hash = bitcoind_client.get_block_hash(h)?;
+        let stale_header = bitcoind_client.get_block_header(&stale_hash)?;
+        let target = nbits_to_target(stale_header.bits.to_consensus());
+        let work = get_difficulty(target);
+        sub_u256_be(&mut chain_work, work);
+    }
+
+    Ok(chain_work)
+}
 
 fn safe_bitcoin_height(best_block_height: u32, required_confirmations: u32) -> u32 {
     best_block_height.saturating_sub(required_confirmations.saturating_sub(1))
@@ -449,18 +486,19 @@ pub async fn relay_blocks_from_full_node(config: RelayConfig, wait_for_new_block
                     }
                 };
                 let ancestor_chain_work = match tokio::task::block_in_place(|| {
-                    bitcoind_client.get_block_info(&common_ancestor.1)
+                    derive_ancestor_chain_work(&bitcoind_client, &main_state_data, common_ancestor.0)
                 }) {
-                    Ok(info) => chainwork_bytes_to_u256_be(&info.chainwork),
+                    Ok(chain_work) => chain_work,
                     Err(e) => {
                         error!(
-                            "Error {e} while loading chainwork for common ancestor height {} during fork recovery",
+                            "Error {e:?} while deriving chain_work for common ancestor height {} during fork recovery",
                             common_ancestor.0
                         );
                         tokio::time::sleep(Duration::from_secs(10)).await;
                         continue;
                     }
                 };
+
                 let mut prev_committed_header = prev_committed_header;
                 prev_committed_header.chain_work = ancestor_chain_work;
 
@@ -706,12 +744,20 @@ pub async fn run_submit_block_fork(
     let block_hash = tokio::task::block_in_place(|| bitcoind_client.get_block_hash(block_number))?;
     let block = tokio::task::block_in_place(|| bitcoind_client.get_block(&block_hash))?;
 
-    let prev_commited_header = tokio::task::block_in_place(|| {
+    let mut prev_commited_header = tokio::task::block_in_place(|| {
         reconstruct_commited_header(
             &bitcoind_client,
             &block.header.prev_blockhash,
             block_number as u32 - 1,
             main_state_data.last_diff_adjustment,
+        )
+    })?;
+
+    prev_commited_header.chain_work = tokio::task::block_in_place(|| {
+        derive_ancestor_chain_work(
+            &bitcoind_client,
+            &main_state_data,
+            block_number as u32 - 1,
         )
     })?;
 
