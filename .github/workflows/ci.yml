@@ -1,26 +1,22 @@
 on:
   push:
-    branches: [ main ]
-  workflow_dispatch:
-    inputs:
-      run_make_builder_image:
-        description: 'Do you need to run make a builder image?'
-        required: true
-        default: 'no'
+    branches: [ main, ci ]
 
 env:
   CARGO_TERM_COLOR: always
   PROJECT_NAME: bitcoin-svm-bridge
   REGISTRY: registry.digitalocean.com/mov3r-container
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  ENABLE_MAKE_BUILDER_IMAGE: false
 
 jobs:
 
   make_builder_image:
     runs-on: ubuntu-latest
-    if: ${{ inputs.run_make_builder_image == 'yes' }}
+    if: ${{ vars.ENABLE_MAKE_BUILDER_IMAGE == 'true' }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install doctl
         uses: digitalocean/action-doctl@v2
@@ -49,7 +45,7 @@ jobs:
       app-block-relayer-image-tag: ${{ steps.build-app-block-relayer.outputs.IMAGE_TAG }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install doctl
         uses: digitalocean/action-doctl@v2
@@ -77,12 +73,12 @@ jobs:
           echo "IMAGE=$IMAGE" >> "$GITHUB_OUTPUT"
 
 
-  deploy:
+  deploy_hyper:
     runs-on: ubuntu-latest
     needs: build
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Create config.toml file
         run: |
@@ -131,3 +127,39 @@ jobs:
             docker compose logs --tail 20
             docker compose ps -a --format 'table {{.Name}}\t{{.Image}}\t{{.Ports}}\t{{.Status}}\t{{lower .Networks}}'
 
+
+  deploy_liquid_layer:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Create config.toml file
+        run: |
+          mkdir -p ./docker-compose/config
+          echo '${{ secrets.LL_CONFIG_TOML }}' > ./docker-compose/config/config.toml
+
+      - name: Create solana keypair file
+        run: |
+          echo -n '${{ secrets.LL_SOLANA_KEYPAIR }}' > ./docker-compose/config/yona-keypair.json
+          chmod 0600 ./docker-compose/config/yona-keypair.json
+
+      - name: Create environment variables
+        run: |
+          cat > ./docker-compose/.env << EOF
+          BLOCK_RELAYER_IMAGE="${{ needs.build.outputs.app-block-relayer-image }}:${{ needs.build.outputs.app-block-relayer-image-tag }}"
+          BLOCK_RELAYER_SECRET_KEY="${{ secrets.LL_BLOCK_RELAYER_SECRET_KEY }}"
+          BLOCK_RELAYER_RUST_BACKTRACE="1"
+          BLOCK_RELAYER_RUST_LOG="info"
+          EOF
+
+      - name: Sync docker compose files
+        uses: burnett01/rsync-deployments@7.1.0
+        with:
+          switches: -avz --delete -e 'ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'
+          path: ./docker-compose
+          remote_path: "/opt/${GITHUB_REPOSITORY#*/}"
+          remote_host: '${{ vars.LL_DEPLOY_SSH_HOST }}'
+          remote_user: '${{ vars.LL_DEPLOY_SSH_USER }}'
+          remote_key: '${{ secrets.LL_DEPLOY_SSH_KEY }}'
